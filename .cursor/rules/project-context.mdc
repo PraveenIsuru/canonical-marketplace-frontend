@@ -1,0 +1,23 @@
+---
+description: Canonical marketplace Next.js frontend project context
+alwaysApply: true
+---
+
+# Frontend Project Context
+
+This is the Next.js 15 (App Router, TypeScript) client for the canonical product catalog marketplace. It talks only to the Laravel API. It holds no business rules and never talks to the database, Redis, Meilisearch, or external vendors directly.
+
+## Responsibilities
+
+- Serve public, SEO-friendly catalogue pages and authenticated buyer/seller/admin UIs
+- Collect user input and call `/api` JSON endpoints
+- Hold Sanctum tokens in httpOnly cookies; protect private routes in middleware
+- Invalidate product pages via a revalidate webhook when the backend creates a new version
+
+## Access model (route groups)
+
+- `(public)`: anonymous catalogue, search, product, sellers, community, store profiles
+- `(auth)`: login and register
+- `(buyer)`, `(seller)`, `(admin)`: client-rendered, not indexed
+
+Follow `.cursor/rules/development-stages.mdc` for build order. Do not skip ahead of the current sprint.
