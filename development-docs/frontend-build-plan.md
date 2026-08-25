@@ -13,7 +13,9 @@ At the time this plan was written the repository was a bare `create-next-app` sc
 
 The platform needs 37 screens (`S-01` to `S-37`), 6 cross cutting interface elements (`X-01` to `X-06`), and consumes 61 API endpoints. Work proceeds through 13 milestones, `M0` to `M12`. `M0` is specified here file by file and needs no backend. `M1` onward are specified as milestone goals with their screen lists.
 
-Because the backend lags, this plan includes a **fixture backed mock API inside the frontend**, toggled by an environment flag, so screens can be built and clicked through before the API exists.
+**There is no mock API in this project.** Within each milestone the backend ships its endpoints first, and the frontend then builds that milestone's screens against the real running API. The reasoning, and what replaces a mock, is in section 6 of [shared/integration-protocol.md](shared/integration-protocol.md).
+
+The wire format is defined once, in [shared/api-contract.md](shared/api-contract.md), which the backend owns and this repository mirrors. Never guess a shape that is not in it.
 
 ---
 
@@ -74,7 +76,7 @@ npm install zod
 
 Leaflet covers the two map needs, a draggable pin for manual placement and a static marker for store display. It needs `NEXT_PUBLIC_MAP_TILE_URL` and must be loaded through `next/dynamic` with `ssr: false`, since it touches `window` at import time.
 
-`zod` catches a backend response drifting from the contract at the point of the fetch rather than three components deeper.
+`zod` is not optional here. With no mock standing between the screens and the API, a schema at the fetch boundary is what turns a contract mismatch into a readable error naming the field, instead of `undefined is not an object` three components later.
 
 ---
 
@@ -90,8 +92,7 @@ app/
 ├── api/
 │   ├── auth/login/route.ts       writes the httpOnly cookie
 │   ├── auth/logout/route.ts      clears it
-│   ├── revalidate/route.ts       revalidation webhook consumer
-│   └── mock/[...path]/route.ts   fixture API, development only
+│   └── revalidate/route.ts       revalidation webhook consumer
 ├── layout.tsx
 ├── globals.css
 ├── not-found.tsx        S-08
@@ -110,10 +111,11 @@ lib/
 ├── location/            geolocation.ts
 ├── query/               keys.ts, provider.tsx
 ├── format/              money.ts, dates.ts
-└── mock/                fixtures and the handler map
+└── schemas/             zod schemas, one per resource, mirroring the contract
 types/                   product.ts, store.ts, proposal.ts, community.ts, api.ts
 proxy.ts                 route protection (NOT middleware.ts)
-development-docs/        this plan
+scripts/                 check-shared-docs.mjs
+development-docs/        this plan, plus the shared contract folder
 ```
 
 Route groups map to **access level**, not to visual layout. That is what makes it obvious at a glance whether a new route belongs behind authentication.
@@ -126,7 +128,7 @@ Nothing in this milestone needs the backend.
 
 ### 5.1 Configuration and environment
 
-- `.env.local`, plus a committed `.env.example`, holding `NEXT_PUBLIC_API_URL`, `API_URL`, `REVALIDATE_SECRET`, `NEXT_PUBLIC_MAP_TILE_URL`, and `NEXT_PUBLIC_USE_MOCK_API`.
+- `.env.local`, plus a committed `.env.example`, holding `NEXT_PUBLIC_API_URL`, `API_URL`, `REVALIDATE_SECRET`, and `NEXT_PUBLIC_MAP_TILE_URL`. `NEXT_PUBLIC_API_URL` and `API_URL` both point at the locally running Laravel API, which must be up for every milestone from M1 onward.
 - **No AI provider key ever appears here.** All AI calls originate from the Laravel service, which keeps provider credentials out of the frontend entirely.
 - `next.config.ts`: add `images.remotePatterns` for the object storage host. Leave `cacheComponents` off.
 
@@ -135,7 +137,7 @@ Nothing in this milestone needs the backend.
 - `ApiError` carries `status`, `code`, and `message`, plus an optional `errors` record for 422 responses. The error envelope is exactly `code`, `message`, and optionally `errors`. **Branch on `code`, never on `message`.**
 - `AiUnavailableError extends ApiError` carrying `queuedJobId`, thrown when `code` is `ai_unavailable`. This is a first class outcome, not a generic failure, because the flow blocks and the work queues.
 - Successful bodies wrap their payload in `data`. Unwrap once in the client so no caller has to.
-- When `NEXT_PUBLIC_USE_MOCK_API` is true the base URL points at `/api/mock` instead of the Laravel host. Nothing else in the application knows the difference.
+- The base URL comes from `NEXT_PUBLIC_API_URL` in the browser and `API_URL` on the server. There is no mock mode and no fixture fallback. If the API is not running, the screen fails, which is the correct signal.
 - Two entry points: `apiFetch` for the browser, and a server variant that reads the cookie and uses `API_URL`. Server components cannot use `credentials: 'include'`.
 
 ### 5.3 `proxy.ts`, route protection
@@ -203,29 +205,31 @@ No notification bell. Ever.
 
 Enough of `components/ui/` to build on: `Button`, `Input`, `Select`, `Card`, `Skeleton`, `Dialog`, `EmptyState`, `Alert`. Empty, loading, and error states are part of every screen definition, so having these first stops each screen from inventing its own.
 
-### 5.10 Mock API layer
+### 5.10 Response schemas and the sync check
 
-`app/api/mock/[...path]/route.ts` matches method and path against a handler map in `lib/mock/`, returning fixtures in the real envelope shape.
+Two pieces of plumbing that exist to catch a frontend and backend disagreement early.
 
-- Success wraps in `data`. Lists return the paginator shape.
-- Errors return `{ code, message, errors? }` using the real codes.
-- Query parameters that change behaviour are honoured, so distance sorting, filters, and pagination actually exercise the interface.
-- Deliberate failure fixtures for every state the screens must handle: `ai_unavailable` with a `queued_job_id`, `mode: 'keyword'` search results, `proposal_pending`, `store_exists`, `geocoding_failed: true`, `not_verified`, `already_voted`, `review_closed`.
-- A jobs fixture reporting `queued`, then `processing`, then `completed` across successive polls, so X-01 can be built and tested properly.
+**`lib/schemas/`.** One zod schema per resource, mirroring section 11 of the contract. `apiFetch` parses through the schema for the route being called, so a shape mismatch fails at the boundary with the offending field named. Add a schema as each milestone's endpoints land, not all at once now.
 
-Development only. Excluded from production builds behind the environment flag.
+**`scripts/check-shared-docs.mjs`, run as `npm run docs:check`.** Compares `development-docs/shared/` against the backend repository's copy by SHA-256 and fails with the differing filenames listed. Run it before starting a milestone and before finishing one. A failing check means you are about to build against a contract that no longer exists. It skips cleanly when the backend repository is not present.
 
 ### 5.11 M0 demonstrates
 
-The frontend starts, navigation renders correctly for each viewer type, an unknown route shows the not found boundary, a protected path redirects to login with the `next` parameter set, and a mock endpoint returns a correctly enveloped response.
+The frontend starts, navigation renders correctly for each viewer type, an unknown route shows the not found boundary, a protected path redirects to login with the `next` parameter set, and `npm run docs:check` passes.
+
+M0 is the one milestone that depends on nothing from the backend. From M1 onward the backend's half of the milestone must be finished and logged first.
 
 ---
 
 ## 6. Milestone roadmap, M1 to M12
 
-Each milestone builds against the mock first, then flips to the real API once the matching backend work lands. Every screen ships its loading, empty, error, and blocked states. **A screen that renders only its happy path is not finished.**
+**The backend ships a milestone's endpoints before the frontend builds the screens that consume them.** Read the milestone's entry in [shared/milestone-log.md](shared/milestone-log.md) before starting, since it records what actually shipped and any deviation from plan.
 
-Do not begin a milestone before its predecessor demonstrates.
+Every screen ships its loading, empty, error, and blocked states. **A screen that renders only its happy path is not finished.**
+
+Do not begin a milestone before its predecessor demonstrates. The full definition of done, covering both repositories, is section 9 of [shared/integration-protocol.md](shared/integration-protocol.md).
+
+What the screens are built against is **seeded data**, not fixtures. The backend seeds products with attributes and generated variants, stores in different cities, and attachments at varied prices, including a zero seller product and a dark store. If a state cannot be reached with the seeded data, ask for a seeder change rather than inventing a fixture.
 
 | Milestone | Screens | Frontend focus |
 |---|---|---|
@@ -272,10 +276,14 @@ npm run build    # type checks and builds with no errors
 npm run lint
 ```
 
-Then by hand: visit `/` and confirm navigation renders anonymously; visit `/dashboard` and confirm the redirect to `/login?next=/dashboard`; visit `/does-not-exist` and confirm the not found boundary; request `/api/mock/products` and confirm a `data` wrapped paginator; request `/api/revalidate` without the secret header and confirm a 401.
+```
+npm run docs:check   # shared contract matches the backend copy
+```
 
-**Per milestone.** Walk that milestone's demonstration flow, once against the mock and again against the real API when it exists. M2 for example is complete when an anonymous visitor with no token browses the catalogue, opens a product, sees every variant including ones no seller carries, declines location and still sees sellers sorted by price, applies a filter, and reads a seller's full contact details and address, all without ever authenticating.
+Then by hand: visit `/` and confirm navigation renders anonymously; visit `/dashboard` and confirm the redirect to `/login?next=/dashboard`; visit `/does-not-exist` and confirm the not found boundary; request `/api/revalidate` without the secret header and confirm a 401.
 
-**On each flip from mock to real.** The mock and the Laravel response must agree on envelope shape, error codes, and money as integers. With `zod` installed, a parse failure at the client boundary catches this immediately.
+**Per milestone.** Walk that milestone's demonstration flow against the running Laravel API with its seeders loaded. M2 for example is complete when an anonymous visitor with no token browses the catalogue, opens a product, sees every variant including ones no seller carries, declines location and still sees sellers sorted by price, applies a filter, and reads a seller's full contact details and address, all without ever authenticating.
+
+**Before and after each milestone.** Run `npm run docs:check`. Then append an entry to [shared/milestone-log.md](shared/milestone-log.md) recording the screens built, anything the API returned that differed from the contract, and anything still needed from the backend. Copy the shared folder across and commit both repositories.
 
 **Before M12 is called done.** Run a production build, view source on a product page, and confirm the product name, description, specifications, and variant list are present in the HTML without JavaScript running, so the page is genuinely indexable. Confirm revalidation fires only on version creation and never on a rejected proposal. Confirm no rendered screen and no response type anywhere contains a confidence score, a verification photograph path, or a product creator field.
