@@ -1,23 +1,22 @@
 ---
-description: Canonical marketplace Next.js frontend project context
+description: Canonical marketplace frontend, pointer to the authoritative docs
 alwaysApply: true
 ---
 
 # Frontend Project Context
 
-This is the Next.js 15 (App Router, TypeScript) client for the canonical product catalog marketplace. It talks only to the Laravel API. It holds no business rules and never talks to the database, Redis, Meilisearch, or external vendors directly.
+This is the Next.js App Router client for the canonical product catalogue marketplace. It talks only to the Laravel API. It holds no business rules and never talks to the database, Redis, the search engine, or external vendors directly.
 
-## Responsibilities
+## Read this before changing anything
 
-- Serve public, SEO-friendly catalogue pages and authenticated buyer/seller/admin UIs
-- Collect user input and call `/api` JSON endpoints
-- Hold Sanctum tokens in httpOnly cookies; protect private routes in middleware
-- Invalidate product pages via a revalidate webhook when the backend creates a new version
+The authority for this repository is `CLAUDE.md` and the documents it points at in `development-docs/`.
 
-## Access model (route groups)
+- `development-docs/README.md` is the index.
+- `development-docs/frontend-build-plan.md` holds the ground rules, the invariants the interface must never break, the M0 Foundations specification, and the M0 to M12 milestone roadmap.
 
-- `(public)`: anonymous catalogue, search, product, sellers, community, store profiles
-- `(auth)`: login and register
-- `(buyer)`, `(seller)`, `(admin)`: client-rendered, not indexed
+Do not rely on this rule file for build order, screen definitions, or API shapes. It deliberately holds none of those, so it cannot drift out of step with the plan.
 
-Follow `.cursor/rules/development-stages.mdc` for build order. Do not skip ahead of the current sprint.
+## Two facts worth repeating here
+
+- This is **Next.js 16**. `middleware.ts` is now `proxy.ts`, and route `params` are Promises that must be awaited.
+- The App Router lives at `app/` in the repository root. There is **no `src/` directory**.

@@ -1,27 +1,18 @@
 ---
-description: Sprint commit stages for frontend development order
+description: Build order pointer, the milestone table lives in development-docs
 alwaysApply: true
 ---
 
-# Frontend Development Stages
+# Frontend Build Order
 
-Work in sprint order. Each sprint ends with something testable. Prefer one focused commit (or a small set) per sprint goal. Do not start a later sprint until the current one is usable.
+The build order is defined in `development-docs/frontend-build-plan.md`, section 5 for `M0` and section 6 for `M1` to `M12`. Read it there.
 
-| Stage | Sprint | Frontend commit goals |
-|---|---|---|
-| 0 | Setup | Next.js App Router scaffold, TypeScript, env for `API_URL` / revalidate secret, base layout, `lib/api` client stub, CI or lint scripts |
-| 1 | Auth shell | `(auth)` login/register pages, httpOnly cookie session helpers, middleware stubs, guards for roles |
-| 2 | Seller store UI | Store register/edit forms, manual map pin fallback UI when geocoding fails |
-| 3 | Attach flows | `(seller)/attach` search, match candidates, confirmation, and new-product wizard screens wired to API |
-| 4 | Public catalogue | Home, product `[slug]` (static + revalidate), sellers list (SSR by location), search with keyword-fallback messaging, store profile |
-| 5 | Peer review UI | Proposal create/status, review/vote screens, version history where permitted |
-| 6 | Community | Read community anonymously, verification flow UI, sentiment summary display |
-| 7 | Buyer extras | Wishlist, alerts, seller analytics dashboard |
-| 8 | Harden | Bug fixes, accessibility pass, empty/error states, docs for running the app |
+This file previously carried its own eight stage sprint table. That table is gone because it contradicted the plan, and two conflicting build orders in one repository is worse than none.
 
-## Stage rules
+## Rules that apply to every milestone
 
-- Stage 0 is the **initial commit** baseline. Create it before feature work.
-- Stages 1 to 3 can use placeholder API responses only if the matching backend stage is not ready; mark TODOs clearly.
-- Stage 4 must hit real public API endpoints once backend stage 4 exists.
-- Keep route folders aligned with access levels. Prefer `components/{ui,product,seller,proposal,community}` and `lib/{api,auth,location,query}`.
+- Do not begin a milestone before its predecessor demonstrates the outcome the plan states for it.
+- Every screen ships its loading, empty, error, and blocked states. A screen that renders only its happy path is not finished.
+- Screens are built against the fixture backed mock API first, then flipped to the real Laravel API once the matching backend work lands. The mock and the real response must agree on envelope shape, error codes, and money as integers.
+- Keep route folders aligned with access level, not with visual layout. The groups are `(public)`, `(auth)`, `(buyer)`, `(seller)`, and `(admin)`.
+- Check section 2.2 of the plan, the invariants, before adding any control to any screen.
