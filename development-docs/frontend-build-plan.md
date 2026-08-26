@@ -184,7 +184,13 @@ Default `staleTime` per data type:
 
 ### 5.7 Root layout and X-04 global navigation
 
-Replace the `create-next-app` boilerplate in `app/layout.tsx` with real metadata, the query provider, and the navigation bar. `app/page.tsx` becomes the S-01 home shell.
+Replace the `create-next-app` boilerplate in `app/layout.tsx` with real metadata, the query provider, and the navigation bar. The home page moves to `app/(public)/page.tsx` and becomes the S-01 shell.
+
+**The navigation is split in two, and this is not cosmetic.** `components/layout/Navigation.tsx` is a server component holding the static half: the logo, catalogue, and search. `components/layout/AccountNav.tsx` is a client component holding everything that depends on the session, and it reads that session from `/api/auth/session` through `lib/auth/useSession.ts`.
+
+The reason is that the root layout wraps every route. An early M0 build called `getSession()` inside the server navigation, which reads cookies, and that forced **every** route in the application to render dynamically, including `/`. That breaks invariant 7 and would have quietly destroyed the static generation the public catalogue depends on for indexing. The split restores `/` to static with an hourly revalidate.
+
+The rule that falls out of this: **nothing in the root layout may read cookies, headers, or `searchParams`.** Anything session dependent in a shared layout has to be a client component.
 
 Navigation shows buyer and seller entries **together**. There is no mode switch, because a single account may hold both roles.
 
