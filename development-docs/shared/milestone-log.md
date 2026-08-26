@@ -23,7 +23,7 @@ Update the two status columns as milestones complete. Everything else in this fi
 |---|---|---|
 | M0 Foundations | Done, with deferrals | Done |
 | M1 Accounts | Done | Done |
-| M2 Catalogue read | Not started | Not started |
+| M2 Catalogue read | Done | Done |
 | M3 Search | Not started | Not started |
 | M4 Seller onboarding | Not started | Not started |
 | M5 Wizard | Not started | Not started |
@@ -227,6 +227,148 @@ Copy this block, fill it in, append it to section 3. Keep entries in chronologic
 
 ---
 
+### M2 Catalogue read path, backend, 2026-08-26
+
+**Shipped.**
+- The **entire database schema**: stores, products, product_attributes, variants, attachments, proposals, proposal_votes, product_versions, product_images, verification_attempts, community_posts, community_summaries, wishlist_items, product_views, with every index from the schema design
+- Models for the catalogue half, with factories for all of them
+- `CatalogueSeeder`: 5 products, 13 variants, 6 stores across 5 cities, 16 attachments
+- EP-08 `/products`, EP-09 `/products/{slug}`, EP-10 `/variants`, EP-11 `/sellers`, EP-12 `/summary`, EP-13 `/stores/{id}`, EP-53 `/categories`
+- `SellerListQuery` and `SellerListFilters`, the PostGIS distance query
+
+**Contract.**
+- Contract version at time of writing: 1
+- Changes made to api-contract.md: none
+- Error codes now live from this milestone: `not_found` on an unknown slug and on a dark store
+
+**Response shapes the frontend should code against.**
+- `lowest_price_minor` and `currency` are **null** on a product no live store carries. Never zero, which would render as free
+- `seller_count` counts **distinct stores**, so one store carrying three variants counts once
+- `distance_km` is **null** when no `lat` and `lng` were supplied, and a rounded float otherwise
+- `/summary` returns `data: null` when no summary exists, so the section is omitted rather than rendered blank
+- `/variants` returns **every** combination, including those with `seller_count: 0`
+- Query parameters on `/sellers`: `variant_id`, `lat`, `lng`, `max_distance_km`, `max_price_minor`, `min_rating`, `available_only`, `sort` (one of distance, price, rating), `page`
+
+**Seeded data available to build against.**
+
+There is no mock API, so this is what the screens have. It deliberately includes the states that are easy to forget:
+
+| Slug | What it exercises |
+|---|---|
+| `vertex-one-smartphone` | Two attributes, six combinations, five sellers, a sentiment summary, **one combination nobody carries**, and **one seller out of stock** |
+| `meridian-14-laptop` | One attribute, three combinations, two sellers in the same city |
+| `standard-usb-c-cable-2m` | **No attributes at all**, so a single default variant and no variant selector |
+| `orbit-wireless-earbuds` | **Zero sellers.** Still listed, null price, page still loads |
+| `lumen-desk-lamp` | Zero sellers by a different route: its only would be seller is dark |
+
+Stores sit in Colombo (two, a few km apart), Kandy, Galle, Jaffna, and one dark store in Matara. Log in as any seeded seller with the email pattern shown in the seeder.
+
+**Deviations from the plan.**
+- **The PostGIS point is derived in a model `saving` hook, not at each call site.** The column is NOT NULL, so setting it after insert is too late, and doing it per call site means every future path has to remember. The hook means the factory, the seeder, and the M4 registration endpoint all get a correct point for free.
+- **`DatabaseSeeder` no longer uses `WithoutModelEvents`.** Store visibility is maintained by model events on `Attachment`. Muting events would have seeded a catalogue in which every store is dark and no seller list returned anything, which looks like a broken frontend for a reason nothing in the code explains.
+- **`Product::attributes()` is named `productAttributes()`.** `attributes` collides with Eloquent's own internal attribute bag.
+- The seeder spreads the two Colombo stores a few kilometres apart. At identical coordinates the seller list showed several rows at 0.0 km, which reads as broken.
+
+**Known gaps handed to the other side.**
+- `store` is still null on every session until M4, so seller navigation stays unreachable.
+- Product images are seeded as rows with fake storage paths. No actual image files exist, so `primary_image.url` points at nothing. Expect broken images and build the placeholder state now rather than later.
+- `current_version_number` is reported as 1 for every product. Real versions arrive at M5.
+
+**Worth knowing: a hole in the live flag.**
+
+`is_live` is maintained by model events on `Attachment`. A **mass delete** through the query builder, `$store->attachments()->delete()`, does not fire those events, so the flag would silently stay true and a dark store would keep appearing in seller lists. A test documents this. The application only ever deletes one attachment at a time, so it does not bite today, but it is the drift the design anticipated when it called for a periodic reconciliation job at M12.
+
+**Verified by.**
+- 25 tests in `tests/Feature/Api/CatalogueTest.php`, including distance ordering asserted against real coordinates from two different buyer locations, dark stores excluded, null distance without coordinates, every filter, prices as integers, and a public route returning identical data with and without a token
+- `composer test` green: Pint passed, PHPStan level 7 with 0 errors, 125 passed and 9 todo
+- Live against seeded data: Colombo to Kandy measured 97 km and Colombo to Jaffna 303 km, matching real geography; ordering flipped correctly when the buyer moved to Jaffna; `max_distance_km=120` dropped Jaffna; `available_only` dropped the out of stock row; the dark store returned 404
+
+---
+
+### Infrastructure note, both repositories, 2026-08-26
+
+**The shared docs sync check had a flaw, found by the check itself.**
+
+The backend carries a `.gitattributes` with `eol=lf`; the frontend carried none. On Windows that means two byte identical documents differ by one byte per line, so hashing raw bytes reported drift that was not real. Once both repositories were committed it would have failed permanently, and a check that cries wolf is one people learn to ignore.
+
+Both checkers now normalise line endings before hashing, because what matters is that the content agrees; line endings are a platform artifact. A `.gitattributes` was also added to the frontend so the stored bytes match too.
+
+---
+
+### Infrastructure note, backend, 2026-08-26
+
+Re-recorded. This entry was written when Meilisearch was configured and was lost from the log at some point between then and the M2 commit. The work itself was never lost, and was re-verified before writing this.
+
+**Meilisearch configured.**
+- Meilisearch Cloud, server 1.53.1. `meilisearch/meilisearch-php` installed, `config/scout.php` published
+- `SCOUT_DRIVER=meilisearch`, `SCOUT_QUEUE=true` so indexing runs off the request, which matters at M5 where the wizard submit is already one large transaction
+- `MEILISEARCH_HOST` and `MEILISEARCH_KEY` live in `.env` only. The key is admin scoped, which Scout needs in order to create indexes and write documents
+- Verified by a health check, a version read, an index create, and a delete
+
+**PHP had no CA certificate bundle at all.** This was the important half.
+
+`curl.cainfo` and `openssl.cafile` were both empty and no `cacert.pem` existed anywhere, so **every outbound HTTPS request from PHP failed**, including to google.com. It surfaced as a Meilisearch connection error but was never specific to Meilisearch.
+
+Left unfixed it would have broken the AI provider at M3, LocationIQ geocoding at M4, and S3 object storage at M7, each looking like a vendor outage rather than a local misconfiguration.
+
+Fixed by downloading the Mozilla CA bundle to `C:\php-8.3.12\extras\ssl\cacert.pem` and pointing both ini directives at it. `php.ini` was backed up first. Certificate verification was **not** disabled, since doing so would have hidden the fault and followed the project into production.
+
+This is a machine level change and lives outside both repositories. A different machine will need it done again.
+
+**Open decision, not blocking.** The ADR rejected Algolia because a hosted service with per operation pricing was inappropriate for this project, and chose Meilisearch partly because it self hosts free as a single binary. Meilisearch Cloud reintroduces that cost after a 14 day trial. The configuration is identical either way, so switching to the local binary is a one line change to `MEILISEARCH_HOST`. Decide before the write up whether the report describes self hosted or hosted search.
+
+---
+
+### M2 Catalogue read path, frontend, 2026-08-26
+
+**Shipped.**
+- S-01 `/` with category tiles and a recently added strip, static, revalidated hourly
+- S-02 `/products` with category filtering in the URL and pagination
+- S-04 `/products/[slug]`, prerendered per product, with client variant selection
+- S-05 `/products/[slug]/sellers` with filters, sorting, and pagination
+- S-07 `/stores/[id]`, contact block and listings
+- X-03 location prompt wired into S-04 and S-05, not just the account screen
+- `lib/api/catalogue.ts` and `lib/schemas/catalogue.ts` for EP-08 to EP-13 and EP-53
+- `components/product/ProductImage.tsx`, the placeholder for images that fail to load
+- `scripts/verify-m2-contract.mjs`, which parses every live M2 response through its schema
+
+**Contract.**
+- Contract version at time of writing: 1
+- Changes made to api-contract.md: none
+- Error codes handled on screen: `not_found` on an unknown slug and on a dark store
+
+**Deviations from the plan.**
+- **Catalogue reads bypass `/api/proxy` entirely.** The proxy exists to attach a session token; routing public reads through it would resolve a session on the highest traffic paths and make the responses uncacheable. They go server side straight to Laravel.
+- **The seller list is cached when it is not personalised, and uncached when it is.** Without coordinates or filters the response is identical for every visitor, and caching that call is what allows S-04 to be statically generated. Any request carrying coordinates, filters, or a sort passes `revalidate: 0`, so one buyer's distance ordering can never be served to another.
+- **`loading.tsx` was removed from `products/` and `stores/[id]`, replaced by `<Suspense>` inside the catalogue page.** See the note below; this one is worth reading before adding a `loading.tsx` anywhere near a route that can 404.
+- **`getProducts` takes a `revalidate` argument.** A hardcoded 300 inside the helper was silently overriding the home page's hourly setting, because Next uses the shortest revalidate across every fetch in a route.
+- S-05 fetches an unfiltered list on the server and hands it to the client panel as initial data, so contact details are in the server rendered HTML rather than appearing only once JavaScript runs.
+
+**A backend contract violation this milestone caught.**
+
+`EP-11 /sellers` returned `attribute_values` as `[]` for a product with no attributes, while `EP-10 /variants` returned `{}` for the same variant. The contract specifies an object. A product whose default variant has an empty combination is stored as an empty JSON array, and `json_decode` handed that straight back.
+
+It was found by the zod schema at the fetch boundary during a build, not by a screen rendering something odd. Fixed at the source in `SellerListingResource` with a cast, matching what `EP-10` already did, and covered by a regression test asserting the raw JSON, since `json_decode` to an array cannot tell `{}` from `[]`. This is the drift the schemas exist to catch.
+
+**Worth knowing: notFound() and streaming.**
+
+A `loading.tsx` beside a route applies to **every nested route as well**, and it makes Next begin streaming before the page component runs. Once streaming has begun a `notFound()` can no longer change the status, so the page renders the not found UI with a **200**. That is a soft 404 a crawler will index.
+
+`app/(public)/products/loading.tsx` was doing exactly this to `/products/[slug]`. Before the fix, an unknown slug and a dark store both answered 200. Both now answer 404. The loading state was restored as a `<Suspense>` boundary **inside** the catalogue page, which is scoped to that page and does not leak downward.
+
+**Known gaps handed to the other side.**
+- Product images 404, because the seeder writes storage paths for files that were never uploaded. The placeholder handles it and stays useful once real uploads arrive at M5.
+- The wishlist button on S-04 is a disabled affordance bound to the selected variant. The mutation is M8, and rendering a control that fails when clicked would be worse than one that says it is not ready.
+- S-07 is server rendered on demand rather than prerendered at build. There is no endpoint that lists live stores, so there is nothing to enumerate for `generateStaticParams`. It still caches for 300 seconds after first request. See the open request below.
+- Seller navigation remains unreachable, as expected while `store` is null.
+
+**Verified by.**
+- `npm run build`, `npm run lint`, and `npx tsc --noEmit` all clean. All five seeded products prerender as SSG; `/` is static at 1h; `/products` and `/products/[slug]/sellers` are dynamic, which is correct
+- `scripts/verify-m2-contract.mjs`: all 11 live responses parse, including both `/summary` states and both `/sellers` coordinate modes
+- Against the production build with seeded data: all five products listed anonymously; all six combinations of `vertex-one-smartphone` render including the one nobody carries; the summary shows; `standard-usb-c-cable-2m` renders **no** variant selector; `orbit-wireless-earbuds` and `lumen-desk-lamp` load with the empty seller state and no price; with no location **no distance is rendered at all** and never a zero; from Colombo the distances read 2.1, 5.6, and 97.0 km in a sensible order; `available_only` cut 10 sellers to 9, `max_distance_km=50` to 4, `max_price_minor=240000` to 2; the store page shows address, email, and phone with no login; the dark store is absent from every seller list and answers 404 at its own URL
+
+---
+
 ---
 
 ## 4. Open requests
@@ -235,7 +377,8 @@ Things one side needs from the other that are not yet built. Remove a row only w
 
 | Raised by | Date | Need | Status |
 |---|---|---|---|
-| Backend | 2026-08-26 | A Meilisearch server must be installed and running before M3 search work | Open, blocks M3 |
+| Backend | 2026-08-26 | A Meilisearch server must be installed and running before M3 search work | **Resolved 2026-08-26.** Meilisearch Cloud 1.53.1, Scout on the meilisearch driver, write access verified |
 | Backend | 2026-08-26 | Redis must be available before queued AI work needs Horizon's visibility, or the queue driver decision revisited | Open, blocks nothing yet |
+| Frontend | 2026-08-26 | No endpoint lists live stores, so S-07 cannot be prerendered at build time through `generateStaticParams`. It renders on demand and caches for 300 seconds instead | Open, low priority. Only affects build time prerendering, not correctness |
 
 Use this table rather than guessing. A frontend screen that needs a field the contract does not define adds a row here. It does not invent a field name and hope.

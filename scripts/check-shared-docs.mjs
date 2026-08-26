@@ -19,14 +19,28 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localDir = join(repoRoot, "development-docs", "shared");
 const siblingDir = resolve(repoRoot, "..", "backend", "development-docs", "shared");
 
-/** @returns {Map<string, string>} filename => sha256 of contents */
+/** @returns {Map<string, string>} filename => sha256 of normalised contents */
 function hashSharedDocs(directory) {
   const hashes = new Map();
 
   for (const name of readdirSync(directory).sort()) {
     const path = join(directory, name);
     if (!name.endsWith(".md") || !statSync(path).isFile()) continue;
-    hashes.set(name, createHash("sha256").update(readFileSync(path)).digest("hex"));
+
+    /*
+     * Line endings are normalised before hashing, and this is not cosmetic.
+     *
+     * The backend repository carries a .gitattributes with eol=lf while this one does
+     * not, so on Windows the two checkouts of a byte identical document differ by one
+     * byte per line. Hashing raw bytes would report drift on every commit forever, and
+     * a check that cries wolf is a check people learn to ignore.
+     *
+     * What matters is that the content agrees. Line endings are a platform artifact,
+     * not a contract difference.
+     */
+    const normalised = readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
+
+    hashes.set(name, createHash("sha256").update(normalised, "utf8").digest("hex"));
   }
 
   return hashes;

@@ -6,3 +6,4 @@ export { Skeleton, SkeletonGrid } from './Skeleton';
 export { Alert } from './Alert';
 export { EmptyState } from './EmptyState';
 export { Dialog } from './Dialog';
+export { Pagination } from './Pagination';
