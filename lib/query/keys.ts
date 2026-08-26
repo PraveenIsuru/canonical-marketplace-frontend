@@ -31,6 +31,13 @@ export const queryKeys = {
       ['products', slug, 'versions', versionNumber] as const,
   },
   search: {
+    /*
+     * The mode is part of the key, and that is load bearing rather than tidy.
+     *
+     * The same query string can be served by AI interpretation or by keyword fallback,
+     * and the two return different results. Sharing a cache entry would show a visitor
+     * yesterday's AI results under today's fallback notice, or the reverse.
+     */
     query: (q: string, mode: 'ai' | 'keyword', category?: string, page?: number) =>
       ['search', q, mode, { category, page }] as const,
   },

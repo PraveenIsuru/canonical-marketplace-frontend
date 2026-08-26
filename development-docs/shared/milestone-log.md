@@ -24,7 +24,7 @@ Update the two status columns as milestones complete. Everything else in this fi
 | M0 Foundations | Done, with deferrals | Done |
 | M1 Accounts | Done | Done |
 | M2 Catalogue read | Done | Done |
-| M3 Search | Not started | Not started |
+| M3 Search | Done | Done |
 | M4 Seller onboarding | Not started | Not started |
 | M5 Wizard | Not started | Not started |
 | M6 Confirmation and proposals | Not started | Not started |
@@ -369,6 +369,106 @@ A `loading.tsx` beside a route applies to **every nested route as well**, and it
 
 ---
 
+### M3 Search, backend, 2026-08-26
+
+**Shipped.**
+- EP-14 `GET /api/search`, public, and EP-15 `GET /api/seller/catalogue-search`, seller only
+- `AiProvider` interface, with `FakeAiProvider` (including a deliberate failing mode) and `AnthropicAiProvider`
+- `AiServiceProvider` binding the interface by config, and `config/ai.php`
+- `ProductSearchService`, `SearchMode`, and `SearchResult`
+- Scout `Searchable` on `Product`, with Meilisearch index settings
+- `ai_jobs` table, `AiJob` model, and the `InterpretSearchQuery` queued job
+- The seeded catalogue is indexed: 5 documents, searchable by name, category, description, and specification values
+
+**Contract.**
+- Contract version at time of writing: 1
+- Changes made to api-contract.md: none. The implementation matched it
+- Error codes now live from this milestone: `ai_unavailable`, from EP-15 only
+
+**Response shapes the frontend should code against.**
+- Both endpoints return `mode` **beside** `data` at the top level, never inside it. Values are `ai` and `keyword`
+- **EP-14 never returns `ai_unavailable` and never queues work.** On any provider failure it returns **200** with `mode: "keyword"`
+- **EP-15 does the opposite.** On provider failure it returns **503** with `code: "ai_unavailable"` and `queued_job_id` at the top level. That body carries no `data` and no `mode`
+- Query parameters on both: `q` (required, 1 to 200 characters) and `category` (optional)
+- Pagination links carry `q`, not Scout's own `query` parameter
+
+**Deviations from the plan.**
+- **The `AiProvider` interface carries one method, not five.** The ADR describes five kinds of AI call. Only `interpretSearchQuery` exists, because four unimplemented stubs would be dead code no test exercises. The interface grows one method per milestone, and the coming methods are listed in its docblock, including the note that two of them need vision capable models.
+- **An `ai_jobs` table was added, which the schema document does not define.** EP-15 must return a `queued_job_id` that EP-50 can later poll for a status and a result. Laravel's own `jobs` table deletes the row the moment work finishes, so polling it would report "not found" for every job that succeeded. The contract already specifies the job payload; this is the storage it implies.
+- **`stores.location` is now a PostGIS generated column.** It was previously built by a model `saving` hook, which was a convention any future write could forget. The database derives it from the coordinate pair, so the two cannot disagree by construction. This also removed the last place PHP assembled spatial SQL by hand.
+- The fake interpreter strips filler words rather than doing anything clever. Its purpose is to return something **different** from the raw query, so a test can tell which path served a response from the results rather than trusting the mode field to be honest about itself.
+
+**Two defects found and fixed during this milestone.**
+
+**The test suite was writing to the live Meilisearch index.** Making `Product` searchable without disabling Scout in tests meant every factory created product was pushed to the real Cloud index and left there by rollback. It grew to 29 documents, displaced the seeded catalogue, and a manual search for a seeded product returned nothing **while the suite still passed green**. `phpunit.xml` now sets `SCOUT_DRIVER=null`, and the index was flushed and reimported. Tests must never write to a shared external service.
+
+**PHPStan had 63 pre-existing errors from M2 that went unreported.** They were in the M2 resources, controller, and factories, and were missed because the `composer test` run at the end of M2 was backgrounded and its output truncated; the exit code was read without the analysis lines. The earlier claim that M2 passed "PHPStan level 7 with 0 errors" was wrong, and this entry corrects it. The root cause was relation methods declared without generics, so Larastan resolved every relation to `Collection<Model>`. All are now fixed at source and the analyser is genuinely at zero.
+
+**Known gaps handed to the other side.**
+- **Indexing runs through the queue.** `SCOUT_QUEUE=true` with the `database` driver means a worker must be running, or nothing is indexed. `scout:import` reports success either way, which is misleading. Run `php artisan queue:work --stop-when-empty` after importing, and keep a worker running from M5 when the wizard indexes new products.
+- **Keyword mode is genuinely worse than AI mode**, which is the point of the visible notice. A verbose query like "I am looking for a good smartphone" finds the product in `ai` mode and returns nothing in `keyword` mode, because the raw string goes to the engine untouched. S-03 should show both the fallback notice and the no matches message so a visitor can tell a weak query from a degraded service.
+- EP-50 `GET /api/jobs/{id}` does not exist yet; it lands at M5. A `queued_job_id` from EP-15 is a real, persisted row, but nothing can poll it until then.
+- The real Anthropic adapter is implemented but unexercised. `AI_PROVIDER=fake` is the default, and no test touches the network.
+
+**Verified by.**
+- 22 tests in `tests/Feature/Api/SearchTest.php`, covering both modes read from the response body, empty results in each mode, buyer parity with and without a token, no session started, and the queued job completing and failing
+- The decisive test asserts the divergence directly: one provider failure, buyer 200 with `mode: "keyword"`, seller 503 with `ai_unavailable`
+- `composer test` green: Pint passed, PHPStan level 7 with **0 errors**, 149 passed and 9 todo
+- Live against the running server and the real index: `vertex` returns the smartphone in `ai` mode; "I am looking for a good smartphone" and "I would like a cheap laptop please" both resolve to the right product; with `AI_FAKE_SHOULD_FAIL=true` the buyer endpoint stays 200 with `mode: "keyword"` while the seller endpoint returns 503 with a top level `queued_job_id` and no `data` or `mode` key
+
+---
+
+### M3 Search, frontend, 2026-08-26
+
+**Shipped.**
+- S-03 `/search`, server rendered per request, under `(public)`
+- X-02 `KeywordFallbackNotice`, rendered only when the response says `mode` is `keyword`
+- `SearchForm`, a plain GET form now shared by S-03 and the home page
+- `searchResponseSchema` and the `searchProducts` helper for EP-14
+- `scripts/verify-m3-contract.mjs`, which parses live EP-14 responses and asserts a body missing `mode` is rejected
+
+**Contract.**
+- Contract version at time of writing: 1
+- Changes made to api-contract.md: none
+- Error codes handled on screen: none new. EP-14 answers 200 in both modes, so the only failure path is the ordinary error boundary
+
+**How the notice is driven.**
+
+By `mode` from the response body, and by nothing else. The client does not infer a fallback from an empty result set, a slow response, or anything it noticed itself, and it has no fallback logic of its own to grow. `mode` is required in the schema rather than optional with a default, so a body missing it fails loudly instead of quietly reading as `ai`.
+
+**The two empty states, which are not the same state.**
+
+A verbose query finds the product in `ai` mode and returns nothing in `keyword` mode, because the raw string goes to the engine untouched. So an empty result means different things depending on which path served it, and the screen says so:
+
+- Empty in `keyword` mode: the notice stays visible **and** the empty state explains that smart search would normally understand a phrase like this, suggesting a shorter term.
+- Empty in `ai` mode: a plain "nothing matched" with no suggestion that anything failed, because nothing did.
+
+Collapsing these into one message would leave a visitor unable to tell a degraded service from a weak query, which is the whole reason the fallback is visible rather than silent.
+
+**Deviations from the plan.**
+- **No EP-15 client helper was added.** The plan ties M3 to S-03 and X-02 only, and seller catalogue search has no screen until the attachment flow at M5. A helper with no caller would be dead code, and its failure path needs the queued job panel, which is M5 work.
+- **An empty `q` makes no request at all.** The API requires `q` and answers 422, so calling it would turn "you have not searched yet" into an error the visitor did nothing to cause. The screen shows a prompt instead.
+- The loading state is a `<Suspense>` boundary inside the page, keyed on the query, rather than a `loading.tsx`. A segment level file would apply to sibling routes and start streaming before the page component runs, which is what produced soft 404s during M2.
+
+**Known gaps handed to the other side.**
+- Nothing blocking.
+- `/search` is deliberately `noindex, follow`, so it will not appear in search engines. That is per the indexing rules; product pages carry the indexable content.
+- Category filtering is read from the URL and passed through to EP-14, but no category control is rendered on S-03. The catalogue screen owns that interaction, and adding a second one here was not asked for.
+
+**Verified by.**
+- `npm run build`, `npm run lint`, and `npx tsc --noEmit` all clean. `/search` builds as a dynamic route, which is correct for an endlessly varying query
+- `scripts/verify-m3-contract.mjs`: live responses parse, and a body without `mode` is rejected
+- Against the production build and the live API, with the backend toggled both ways:
+  - AI mode, verbose query: product card shown, **no notice**
+  - AI mode, no match: plain empty state, **no notice** and no claim that anything failed
+  - Keyword mode, verbose query: **notice shown and empty state shown together**, with wording specific to the degraded path
+  - Keyword mode, short query `vertex`: notice shown **and** the product found
+  - Toggling the backend back to healthy made the notice disappear again
+  - `/search` returns 200 with no token and carries `robots: noindex, follow`
+  - An empty query renders the prompt with no error
+
+---
+
 ---
 
 ## 4. Open requests
@@ -377,7 +477,7 @@ Things one side needs from the other that are not yet built. Remove a row only w
 
 | Raised by | Date | Need | Status |
 |---|---|---|---|
-| Backend | 2026-08-26 | A Meilisearch server must be installed and running before M3 search work | **Resolved 2026-08-26.** Meilisearch Cloud 1.53.1, Scout on the meilisearch driver, write access verified |
+| Backend | 2026-08-26 | A Meilisearch server must be installed and running before M3 search work | **Closed 2026-08-26.** M3 shipped against it: the seeded catalogue is indexed and both search endpoints answer from it |
 | Backend | 2026-08-26 | Redis must be available before queued AI work needs Horizon's visibility, or the queue driver decision revisited | Open, blocks nothing yet |
 | Frontend | 2026-08-26 | No endpoint lists live stores, so S-07 cannot be prerendered at build time through `generateStaticParams`. It renders on demand and caches for 300 seconds instead | Open, low priority. Only affects build time prerendering, not correctness |
 

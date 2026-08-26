@@ -169,6 +169,29 @@ export const categorySchema = z.object({
   product_count: z.number().int(),
 });
 
+/**
+ * EP-14 buyer search.
+ *
+ * `mode` is **required and sits beside `data`**, not inside it. It is not optional and
+ * must never be defaulted: the client shows its fallback notice from this field alone,
+ * so a missing value has to fail loudly rather than quietly read as "ai".
+ *
+ * The backend is the single authority on which path served a query. There is no
+ * client side fallback anywhere, because two layers deciding independently would
+ * eventually disagree about what a visitor was actually shown.
+ */
+export const searchModeSchema = z.enum(['ai', 'keyword']);
+
+export const searchResponseSchema = z.object({
+  mode: searchModeSchema,
+  data: z.array(productSummarySchema),
+  links: paginationLinksSchema,
+  meta: paginationMetaSchema,
+});
+
+export type SearchMode = z.infer<typeof searchModeSchema>;
+export type SearchResponse = z.infer<typeof searchResponseSchema>;
+
 export type ProductSummary = z.infer<typeof productSummarySchema>;
 export type ProductDetail = z.infer<typeof productSchema>;
 export type Variant = z.infer<typeof variantSchema>;

@@ -16,6 +16,7 @@ import { apiFetchServer, ApiError } from '@/lib/api/client';
 import {
   categorySchema,
   paginated,
+  searchResponseSchema,
   productSchema,
   productSummarySchema,
   publicStoreSchema,
@@ -27,6 +28,7 @@ import {
   type ProductDetail,
   type ProductSummary,
   type PublicStore,
+  type SearchResponse,
   type SellerListing,
   type SentimentSummary,
   type Variant,
@@ -193,6 +195,30 @@ export async function getSellers(slug: string, options: SellerListOptions = {}):
   });
 
   return parse(paginated(sellerListingSchema), payload, 'GET /api/products/{slug}/sellers');
+}
+
+/**
+ * EP-14 Buyer search.
+ *
+ * Never cached. Query strings are effectively unbounded, so a cache would fill with
+ * entries nobody reads twice, and a degraded result must not outlive the outage that
+ * produced it.
+ *
+ * This endpoint never returns `ai_unavailable` and never queues work. It is the
+ * availability floor for buyer discovery: on any provider failure the backend falls
+ * back to keyword results and still answers 200 with `mode: "keyword"`. The client
+ * therefore has no fallback logic of its own and must not grow any.
+ */
+export async function searchProducts(
+  query: string,
+  options: { category?: string; page?: number } = {},
+): Promise<SearchResponse> {
+  const payload = await apiFetchServer<unknown>('/api/search', {
+    query: { q: query, category: options.category, page: options.page },
+    cache: 'no-store',
+  });
+
+  return parse(searchResponseSchema, payload, 'GET /api/search');
 }
 
 /**
