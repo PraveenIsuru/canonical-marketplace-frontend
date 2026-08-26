@@ -63,13 +63,14 @@ export class NetworkError extends Error {
   }
 }
 
-function browserBaseUrl(): string {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) {
-    throw new Error('NEXT_PUBLIC_API_URL is not set. Copy .env.example to .env.local.');
-  }
-  return url.replace(/\/$/, '');
-}
+/**
+ * Browser calls go through this application's own proxy, not straight to Laravel.
+ *
+ * The token is in an httpOnly cookie on this origin, so it is neither readable by
+ * JavaScript nor sent to a different origin by `credentials: 'include'`. The proxy
+ * attaches it server side. See app/api/proxy/[...path]/route.ts.
+ */
+const BROWSER_BASE = '/api/proxy';
 
 function serverBaseUrl(): string {
   const url = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL;
@@ -119,6 +120,21 @@ function buildUrl(base: string, path: string, query?: RequestOptions['query']): 
   return url.toString();
 }
 
+/** Same query handling, for a relative path that has no origin to parse against. */
+function buildPath(path: string, query?: RequestOptions['query']): string {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.set(key, String(value));
+    }
+  }
+
+  const search = params.toString();
+
+  return `${path.startsWith('/') ? path : `/${path}`}${search ? `?${search}` : ''}`;
+}
+
 function buildInit(options: RequestOptions): RequestInit {
   // `query` is consumed by buildUrl, so it must not reach fetch as an init option.
   const { body, query, headers, ...rest } = options;
@@ -148,9 +164,13 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   let response: Response;
 
   try {
-    response = await fetch(buildUrl(browserBaseUrl(), path, options.query), {
+    // `path` arrives as an API path such as `/api/user`. The proxy is mounted at
+    // /api/proxy and re-adds the /api prefix when forwarding, so strip it here.
+    const proxied = path.replace(/^\/api/, '');
+
+    response = await fetch(`${BROWSER_BASE}${buildPath(proxied, options.query)}`, {
       ...buildInit(options),
-      credentials: 'include',
+      credentials: 'same-origin',
     });
   } catch (cause) {
     throw new NetworkError(cause);
