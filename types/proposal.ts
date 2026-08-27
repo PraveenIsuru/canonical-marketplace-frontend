@@ -1,92 +1,119 @@
 /**
- * Proposals, votes, and the attachment flow.
+ * Peer review (EP-27 to EP-30), per section 11.8 of the contract.
  *
- * Note what is absent: there is no confidence score or confidence band anywhere in
- * this file. Not optional, not nullable, absent. The score drives the resolution
- * matrix server side and never leaves the server. A field declared here would be a
- * field somebody eventually renders.
+ * Note what is absent, and that it is absent rather than optional.
+ *
+ * There is **no `confidence_score` and no `confidence_band`**. They decide the
+ * resolution matrix server side and are returned to nobody, the seller who wrote the
+ * proposal included. A reviewer who could see the AI's assessment would be voting on
+ * the assessment rather than on the product they actually stock, which is the one
+ * thing peer review exists to avoid. Declaring the field here, even optionally, would
+ * be the first step to somebody rendering it.
+ *
+ * There is also **no per field accept or reject state**. A proposal is taken or left
+ * as a whole, and a type carrying per field decisions would invite a control that
+ * invariant 4 forbids.
+ *
+ * This file replaced an M0 placeholder written before any of these endpoints existed.
+ * The old shape guessed at `proposing_store`, `vote_summary`, `comments`, `my_vote`,
+ * and `current_values`, none of which the API returns.
  */
 
-export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'escalated';
+import type { ProposalStatus } from '@/types/confirmation';
 
-export type EscalationReason = 'disagreement' | 'inactivity';
+/*
+ * Re-exported rather than declared again. M6 defined this for the blocked listings
+ * entry, and two definitions of the same union drift the moment one gains a status.
+ */
+export type { ProposalStatus };
 
-export interface VoteSummary {
-  in_favour: number;
-  against: number;
-}
-
-export interface ReviewerComment {
-  store_name: string;
-  comment: string;
-  created_at: string;
-}
-
-export interface Proposal {
+/** The product a proposal argues about. Never the store that proposed it. */
+export interface ProposalProduct {
   id: number;
-  product: { id: number; slug: string; name: string };
-  proposing_store: { id: number; name: string };
-  changes: Record<string, unknown>;
-  current_values: Record<string, unknown>;
-  status: ProposalStatus;
-  review_opens_at: string;
-  /** Null once escalated, because no deadline applies to an escalation. */
-  review_closes_at: string | null;
-  resolved_at: string | null;
-  vote_summary: VoteSummary;
-  escalation_reason: EscalationReason | null;
-  comments: ReviewerComment[];
-  /** A hint for rendering only. Eligibility is decided server side on the vote call. */
-  can_vote: boolean;
-  /** The caller's own vote, when they have already cast one. */
-  my_vote: boolean | null;
-}
-
-/** Vote responses carry the post vote status, so the screen shows the outcome directly. */
-export interface VoteResult {
-  vote_recorded: true;
-  proposal_status: ProposalStatus;
-  resolved_at: string | null;
-}
-
-/** A candidate returned by AI matching. The match score is internal and is not returned. */
-export interface MatchCandidate {
-  product_id: number;
   slug: string;
   name: string;
-  primary_image: { url: string } | null;
-}
-
-export interface ConfirmationQuestion {
-  id: string;
-  attribute_name: string;
-  question: string;
-}
-
-export interface ConfirmationSession {
-  session_id: string;
-  product: { id: number; slug: string; name: string };
-  questions: ConfirmationQuestion[];
-}
-
-export interface WizardSession {
-  session_id: string;
-  questions: ConfirmationQuestion[];
 }
 
 /**
- * One endpoint, two outcomes, distinguished by a field rather than a status code.
+ * One proposal in a list (EP-27 and EP-28).
  *
- * No attachment is created alongside a proposal. The absence of an attachment row
- * is what blocks the proposing seller from selling that product.
+ * `reviewer_count` is the frozen reviewer set recorded when the proposal opened, not
+ * the number of stores carrying the product today. `votes_cast` counts votes actually
+ * cast, and it is the denominator the matrix uses: a reviewer who does not vote is
+ * excluded rather than counted as opposed.
  */
-export type ConfirmationOutcome =
-  | { outcome: 'attached'; attachment_ids: number[] }
-  | { outcome: 'proposal_created'; proposal_id: number; review_closes_at: string };
+export interface ProposalSummary {
+  id: number;
+  status: ProposalStatus;
+  review_opens_at: string;
+  review_closes_at: string;
+  /** Null while the proposal is still pending. */
+  resolved_at: string | null;
+  /** Which fields are argued about, so a row can say what rather than only that. */
+  changed_fields: string[];
+  product: ProposalProduct;
+  votes_cast: number;
+  reviewer_count: number;
+  /** Describes the calling store, which is what separates outstanding from finished. */
+  has_voted: boolean;
+}
 
-export interface WizardResult {
-  product: { id: number; slug: string; name: string };
-  variants_generated: number;
-  attachments_created: number;
-  store_is_live: boolean;
+/**
+ * One field under review.
+ *
+ * `from` is what the record says now and is null where it held nothing, which is a
+ * real case rather than a defensive nullable: a seller can describe a specification
+ * the record never had.
+ */
+export interface ProposalChange {
+  attribute: string;
+  from: string | null;
+  to: string;
+}
+
+/**
+ * One proposal in full (EP-29).
+ *
+ * `changes` is an array rather than an object so the order fields are reviewed in is
+ * the order they are displayed in.
+ */
+export interface ProposalDetail {
+  id: number;
+  status: ProposalStatus;
+  review_opens_at: string;
+  review_closes_at: string;
+  resolved_at: string | null;
+  product: ProposalProduct;
+  changes: ProposalChange[];
+  votes_cast: number;
+  reviewer_count: number;
+  has_voted: boolean;
+  /** True for the proposing store, which may read its own proposal but never vote. */
+  is_mine: boolean;
+  /**
+   * A rendering hint and nothing more.
+   *
+   * True only when the caller is in the frozen reviewer set, has not already voted,
+   * and the window is still open. EP-30 re-checks all three and refuses regardless of
+   * what the client believed, because the window can close between the read and the
+   * write.
+   */
+  can_vote: boolean;
+}
+
+/** The two things a reviewer may say. There is no third value for abstaining. */
+export type VoteChoice = 'approve' | 'reject';
+
+/**
+ * What EP-30 answers, per section 11.6.
+ *
+ * It carries the status **after** the vote, because a vote can resolve the proposal
+ * on the spot when it was the last one outstanding. The screen shows the outcome from
+ * this response rather than polling for it.
+ */
+export interface VoteResult {
+  vote_recorded: true;
+  proposal_status: ProposalStatus;
+  /** Set only when this vote resolved the proposal. */
+  resolved_at: string | null;
 }

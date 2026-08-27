@@ -26,9 +26,10 @@ interface Props {
  * No confidence score appears here. The proposing seller does not get to see how the
  * AI scored them any more than a reviewer does.
  *
- * No link to a proposal detail screen, because there is none yet. `GET /api/proposals/{id}`
- * lands at M7, and a link to a route that does not exist would be worse than the
- * detail being inline.
+ * The detail stays inline as well as linked. M7 gave this a real destination at
+ * `/proposals/{id}`, but a seller who sees this on their dashboard should not have to
+ * navigate to learn what is under review and when it closes. The link is for the
+ * vote count and the decision, which are the parts that change.
  */
 export function PendingProposalNotice({ proposal, showProduct = true }: Props) {
   const isEscalated = proposal.status === 'escalated';
@@ -82,6 +83,12 @@ export function PendingProposalNotice({ proposal, showProduct = true }: Props) {
       <p className="mt-2 text-sm">
         You cannot list this product until the review finishes. Nothing you entered has
         been lost.
+      </p>
+
+      <p className="mt-2 text-sm">
+        <Link href={`/proposals/${proposal.proposal_id}`} className="underline">
+          {isEscalated ? 'See where it got to' : 'See how the review is going'}
+        </Link>
       </p>
     </Alert>
   );

@@ -122,13 +122,15 @@ export function ConfirmationOutcomePanel({ outcome, productName, productSlug }: 
       </div>
 
       {/*
-        No link to a proposal detail screen and no vote tally, because neither exists
-        yet. Both need endpoints that land at M7, and inventing a route here would send
-        the seller somewhere that is not there.
+        Live as of M7. The seller can follow their own submission from here: how many
+        reviewers have voted, what is under review, and what was decided.
       */}
       <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        A page showing how the review is going, with the votes as they come in, is still
-        being built.
+        You can follow this one on{' '}
+        <Link href={`/proposals/${outcome.proposal_id}`} className="underline">
+          its review page
+        </Link>
+        , which shows how many of the other sellers have voted so far.
       </p>
     </div>
   );
