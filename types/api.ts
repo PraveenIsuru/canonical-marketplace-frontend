@@ -89,6 +89,8 @@ export type JobResultType =
   | 'match_candidates'
   | 'wizard_questions'
   | 'confirmation_questions'
+  /** Contract version 3. A queued confirmation submit, resumed by its outcome. */
+  | 'confirmation_outcome'
   | 'verification_result'
   | 'search_interpretation'
   | null;

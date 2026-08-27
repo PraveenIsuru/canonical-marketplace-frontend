@@ -3,7 +3,9 @@
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { getMyStore, needsPinPlacement } from '@/lib/api/stores';
+import { getMyListings } from '@/lib/api/confirmation';
 import { queryKeys } from '@/lib/query/keys';
+import { PendingProposalNotice } from '@/components/proposal/PendingProposalNotice';
 import { Alert, Card, Skeleton } from '@/components/ui';
 
 /**
@@ -23,6 +25,19 @@ export function SellerDashboard() {
     queryKey: queryKeys.stores.mine(),
     queryFn: getMyStore,
   });
+
+  /*
+   * Loaded alongside the store, and its failure is not fatal to this screen. The
+   * dashboard's main job is telling the seller whether they are visible to buyers, and
+   * that comes from the store record. Listings add detail on top.
+   */
+  const { data: listings } = useQuery({
+    queryKey: queryKeys.stores.listings(),
+    queryFn: getMyListings,
+  });
+
+  const blocked = listings?.blocked ?? [];
+  const listingCount = listings?.listings.length ?? 0;
 
   if (isPending) {
     return (
@@ -117,6 +132,34 @@ export function SellerDashboard() {
           </span>
         </div>
       </Card>
+
+      {/*
+        X-05 on the dashboard. A seller whose submission is under review has no
+        attachment row anywhere, so without this the dashboard would say they carry
+        nothing and give no hint that anything is in progress.
+      */}
+      {blocked.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="font-medium">Waiting on review</h2>
+          {blocked.map((proposal) => (
+            <PendingProposalNotice key={proposal.proposal_id} proposal={proposal} />
+          ))}
+        </section>
+      )}
+
+      {listingCount > 0 && (
+        <Card className="flex flex-col gap-2">
+          <h2 className="font-medium">
+            {listingCount === 1 ? 'One product listed' : `${listingCount} products listed`}
+          </h2>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Buyers can find your store on {listingCount === 1 ? 'it' : 'these'}.
+          </p>
+          <Link href="/listings" className="text-sm underline">
+            See your listings
+          </Link>
+        </Card>
+      )}
 
       <Card className="flex flex-col gap-2">
         <h2 className="font-medium">Store details</h2>

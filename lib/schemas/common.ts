@@ -98,6 +98,9 @@ export const jobSchema = z.object({
       'match_candidates',
       'wizard_questions',
       'confirmation_questions',
+      // Contract version 3. What a queued confirmation submit completes as. Its result
+      // is the section 11.4 outcome, never a confidence score.
+      'confirmation_outcome',
       'verification_result',
       'search_interpretation',
     ])

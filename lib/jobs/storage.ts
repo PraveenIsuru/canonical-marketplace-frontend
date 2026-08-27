@@ -22,8 +22,14 @@
 
 import type { ProductDraft } from '@/types/attach';
 
-/** The two flows that can block on the provider. Each keeps its own job id. */
-export type AttachFlow = 'match' | 'wizard';
+/**
+ * The flows that can block on the provider. Each keeps its own job id.
+ *
+ * Separate keys rather than one shared id, because a seller can plausibly have a match
+ * queued and a confirmation queued at the same time, and resuming the wrong one would
+ * put them back into a flow they had already left.
+ */
+export type AttachFlow = 'match' | 'wizard' | 'confirmation';
 
 const JOB_KEY_PREFIX = 'canonical:queued-job:';
 const DRAFT_KEY = 'canonical:attach-draft';
@@ -189,5 +195,85 @@ export function clearStoredDraft(): void {
   if (typeof window === 'undefined') return;
 
   remove(DRAFT_KEY);
+  notify();
+}
+
+/*
+|--------------------------------------------------------------------------
+| The candidate the seller chose
+|--------------------------------------------------------------------------
+| Carried from the match screen to the confirmation screen. Kept in storage rather
+| than in a query parameter so a reload mid confirmation still knows which product is
+| being confirmed, and so the name can be shown without a second fetch.
+*/
+
+/** Just enough to identify and label the product being confirmed. */
+export interface SelectedCandidate {
+  product_id: number;
+  slug: string;
+  name: string;
+}
+
+const CANDIDATE_KEY = 'canonical:attach-candidate';
+
+let candidateCacheKey: string | null = null;
+let candidateCacheValue: SelectedCandidate | null = null;
+
+/**
+ * Cached against the raw string so `useSyncExternalStore` sees a stable reference.
+ * Returning a fresh object each read would re-render forever.
+ */
+export function readSelectedCandidate(): SelectedCandidate | null {
+  if (typeof window === 'undefined') return null;
+
+  const raw = read(CANDIDATE_KEY);
+
+  if (raw === null) {
+    candidateCacheKey = null;
+    candidateCacheValue = null;
+
+    return null;
+  }
+
+  if (raw === candidateCacheKey) return candidateCacheValue;
+
+  candidateCacheKey = raw;
+  candidateCacheValue = parseCandidate(raw);
+
+  return candidateCacheValue;
+}
+
+export function serverCandidateSnapshot(): null {
+  return null;
+}
+
+function parseCandidate(raw: string): SelectedCandidate | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+
+    if (parsed === null || typeof parsed !== 'object') return null;
+
+    const candidate = parsed as Partial<SelectedCandidate>;
+
+    if (typeof candidate.product_id !== 'number') return null;
+    if (typeof candidate.slug !== 'string' || typeof candidate.name !== 'string') return null;
+
+    return { product_id: candidate.product_id, slug: candidate.slug, name: candidate.name };
+  } catch {
+    return null;
+  }
+}
+
+export function storeSelectedCandidate(candidate: SelectedCandidate): void {
+  if (typeof window === 'undefined') return;
+
+  write(CANDIDATE_KEY, JSON.stringify(candidate));
+  notify();
+}
+
+export function clearSelectedCandidate(): void {
+  if (typeof window === 'undefined') return;
+
+  remove(CANDIDATE_KEY);
   notify();
 }

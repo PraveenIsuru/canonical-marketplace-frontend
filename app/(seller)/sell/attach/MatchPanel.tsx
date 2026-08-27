@@ -5,15 +5,23 @@ import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState, type FormEvent } from 'react';
 import { describeImageProblem, isAiUnavailable, matchProduct } from '@/lib/api/attach';
+import {
+  getMyListings,
+  isAlreadyAttached,
+  isProposalPending,
+  startConfirmation,
+} from '@/lib/api/confirmation';
 import { ApiError } from '@/lib/api/client';
 import { useSession } from '@/lib/auth/useSession';
 import { useQueuedJob } from '@/lib/jobs/useQueuedJob';
 import { useStoredDraft } from '@/lib/jobs/useStoredDraft';
-import { storeDraft } from '@/lib/jobs/storage';
+import { storeDraft, storeSelectedCandidate } from '@/lib/jobs/storage';
 import { matchJobResultSchema } from '@/lib/schemas/attach';
 import { QueuedJobPanel } from '@/components/system/QueuedJobPanel';
+import { PendingProposalNotice } from '@/components/proposal/PendingProposalNotice';
 import { Alert, Button, Card, Input, Skeleton } from '@/components/ui';
 import type { MatchCandidate, ProductDraft } from '@/types/attach';
+import type { BlockedProposal } from '@/types/confirmation';
 
 /**
  * S-22 Match candidates.
@@ -28,9 +36,8 @@ import type { MatchCandidate, ProductDraft } from '@/types/attach';
  * empty state, or something to retry.
  *
  * **Candidates means the record already exists**, and the seller joins it rather than
- * writing a second one. Joining is the confirmation flow, which arrives at M6, so this
- * screen shows the candidates and says so plainly. It does not invent questions, does
- * not call an endpoint that is not there, and does not pretend anything was attached.
+ * writing a second one. Choosing one carries it into confirmation, where they answer
+ * questions about the unit they stock.
  *
  * There is deliberately no control anywhere here that lets a seller declare a matched
  * product new. That is what the platform exists to prevent.
@@ -62,6 +69,10 @@ export function MatchPanel() {
   const [error, setError] = useState<ApiError | null>(null);
   const [pending, setPending] = useState(false);
 
+  /** Starting confirmation for the chosen candidate, and what blocks it. */
+  const [confirming, setConfirming] = useState(false);
+  const [blockedProposal, setBlockedProposal] = useState<BlockedProposal | null>(null);
+
   const job = useQueuedJob('match');
 
   /*
@@ -88,6 +99,72 @@ export function MatchPanel() {
   function chooseImage(file: File | null) {
     setImage(file);
     setImageProblem(file === null ? null : describeImageProblem(file));
+  }
+
+  /**
+   * Carries a chosen candidate into confirmation.
+   *
+   * Confirmation is opened on the next screen rather than here, so this only records
+   * which product was chosen and navigates. Two refusals are handled before it gets
+   * that far, because both are better answered on this screen than after a navigation:
+   *
+   *  - `already_attached`: the seller carries this product, so their listings are what
+   *    they actually wanted.
+   *  - `proposal_pending`: they have a submission out on it, and X-05 says where it
+   *    got to rather than only refusing.
+   */
+  async function confirmCandidate(candidate: MatchCandidate) {
+    setConfirming(true);
+    setBlockedProposal(null);
+    setError(null);
+
+    storeSelectedCandidate({
+      product_id: candidate.product_id,
+      slug: candidate.slug,
+      name: candidate.name,
+    });
+
+    try {
+      // Asked here so the refusals land on this screen. The confirmation screen opens
+      // its own session; a second call there is cheap and keeps that screen standalone.
+      await startConfirmation(candidate.product_id);
+
+      router.push('/sell/confirm');
+    } catch (caught) {
+      if (isAlreadyAttached(caught)) {
+        router.push('/listings');
+
+        return;
+      }
+
+      if (isProposalPending(caught)) {
+        // The listings call is what knows the dates and the fields under review, so
+        // the notice is filled in from there rather than from the refusal.
+        const listings = await getMyListings().catch(() => null);
+        const pending = listings?.blocked.find(
+          (entry) => entry.product.id === candidate.product_id,
+        );
+
+        setBlockedProposal(pending ?? null);
+        setConfirming(false);
+
+        return;
+      }
+
+      if (isAiUnavailable(caught) && caught.queuedJobId) {
+        // Not a failure. The confirmation screen picks the job up and resumes.
+        router.push('/sell/confirm');
+
+        return;
+      }
+
+      setError(
+        caught instanceof ApiError
+          ? caught
+          : new ApiError(0, 'unknown', 'Confirmation could not be started.'),
+      );
+      setConfirming(false);
+    }
   }
 
   function draftFrom(): ProductDraft {
@@ -272,11 +349,24 @@ export function MatchPanel() {
         )}
       </form>
 
+      {blockedProposal !== null && (
+        /*
+          X-05. The seller cannot start confirmation on a product they already have a
+          submission out on, and this says where it got to rather than only refusing.
+        */
+        <PendingProposalNotice proposal={blockedProposal} />
+      )}
+
       {candidates !== null && candidates.length > 0 && (
         <CandidateList
           candidates={candidates}
           selected={selected}
-          onSelect={setSelected}
+          onSelect={(candidate) => {
+            setSelected(candidate);
+            setBlockedProposal(null);
+          }}
+          onConfirm={confirmCandidate}
+          confirming={confirming}
           productName={form.name.trim()}
         />
       )}
@@ -287,20 +377,24 @@ export function MatchPanel() {
 /**
  * The candidates, and what a seller can do with them today.
  *
- * Joining an existing record is the confirmation flow, which is M6. Rather than a
- * disabled button that gives no reason, selecting a candidate explains what happens
- * next and when. That is more honest than a control that looks broken, and it stops a
- * seller hunting for something that is not there.
+ * Selecting one carries it into confirmation, where the seller answers questions about
+ * the unit they stock. There is no "none of these" control: a seller may not overrule
+ * the match result to declare their product new, and a genuine difference surfaces as a
+ * proposal during confirmation rather than as a second catalogue record.
  */
 function CandidateList({
   candidates,
   selected,
   onSelect,
+  onConfirm,
+  confirming,
   productName,
 }: {
   candidates: MatchCandidate[];
   selected: MatchCandidate | null;
   onSelect: (candidate: MatchCandidate) => void;
+  onConfirm: (candidate: MatchCandidate) => void;
+  confirming: boolean;
   productName: string;
 }) {
   return (
@@ -371,17 +465,23 @@ function CandidateList({
                 </div>
 
                 {isSelected && (
-                  <Alert tone="info" title="Joining this record is not open yet">
-                    <p>
-                      To join it you confirm a few details about the unit you stock, so
-                      the record stays accurate for everyone selling it. That step is
-                      being built and is not available today.
+                  <div className="flex flex-col gap-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+                    <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                      Next you answer a few questions about the unit you stock. If your
+                      answers match the record you are listed straight away. If any
+                      differ, the sellers who already carry it review the difference
+                      first, which is how the record stays accurate for everyone.
                     </p>
-                    <p className="mt-2">
-                      Nothing has been listed, and nothing you have entered has been
-                      sent anywhere.
-                    </p>
-                  </Alert>
+                    <div>
+                      <Button
+                        size="sm"
+                        loading={confirming}
+                        onClick={() => onConfirm(candidate)}
+                      >
+                        Confirm this product
+                      </Button>
+                    </div>
+                  </div>
                 )}
               </Card>
             </li>
