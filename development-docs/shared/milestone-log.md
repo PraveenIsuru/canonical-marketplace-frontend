@@ -26,7 +26,7 @@ Update the two status columns as milestones complete. Everything else in this fi
 | M2 Catalogue read | Done | Done |
 | M3 Search | Done | Done |
 | M4 Seller onboarding | Done | Done |
-| M5 Wizard | Done | Not started |
+| M5 Wizard | Done | Done |
 | M6 Confirmation and proposals | Not started | Not started |
 | M7 Peer review | Not started | Not started |
 | M8 Listings and wishlist | Not started | Not started |
@@ -639,6 +639,70 @@ Left unfixed it would have reached M6 and M7 as a **wrong proposal deadline**. A
   - EP-48 stored a real JPEG and the URL served it as `image/jpeg`; a PDF sent as `front.jpg` with `Content-Type: image/jpeg` was refused **`unsupported_media_type`**, which is the guessed type doing its job rather than the claimed one
   - With the provider forced to fail, EP-20 returned **503** with `queued_job_id` at the top level. EP-50 reported `queued` with a null `result_type`, and the same id under a different account returned **404**. After the provider recovered and the worker ran, EP-50 reported `completed`, `result_type: match_candidates`, the candidate, and `image_considered: false`
   - The wizard created product was indexed and came back from buyer search
+
+---
+
+### M5 The wizard path, frontend, 2026-08-27
+
+**Shipped.**
+- S-22 `/sell/attach`, the catalogue check and its candidate list
+- S-25 `/sell/wizard`, six steps, with the live combination preview and images held in client state
+- X-01 `components/system/QueuedJobPanel.tsx`, with `lib/jobs/useQueuedJob.ts` and `lib/jobs/storage.ts`
+- `lib/api/attach.ts`, `lib/schemas/attach.ts`, `types/attach.ts`, `lib/attach/combinations.ts`
+- `components/seller/AttributeEditor.tsx`, `CombinationPreview.tsx`, `ImagePicker.tsx`
+- The M4 dashboard copy saying attaching was unavailable is replaced by a real entry point, and X-04 gained a seller entry
+
+**Contract.**
+- Contract version at time of writing: 2
+- Changes made to api-contract.md: none. This side mirrors it
+- Error codes handled on screen: `match_required` (422), `validation_failed` (422), `store_required` (403), `ai_unavailable` (503), `unsupported_media_type` (422), `file_too_large` (422), `image_limit_reached` (422)
+
+**A contract version 2 gap that would have broken a screen.**
+
+`jobSchema` in `lib/schemas/common.ts` and `JobResultType` in `types/api.ts` were both written against contract version 1, whose `result_type` union omitted `search_interpretation`. Seller catalogue search has queued jobs of that type since M3, so polling one through EP-50 would have failed at the fetch boundary with a schema error, on a payload that was entirely valid.
+
+Nothing had caught it because M3 shipped before EP-50 existed, so no screen had ever polled a job. Both are corrected. This is exactly the drift the schemas are for, and it was found by reading the contract rather than by a screen breaking, which is the cheaper of the two ways.
+
+**How the two match outcomes are presented, which is the point of this milestone.**
+
+**No candidates is a success.** The screen does not render an empty state, an apology, or a retry. It routes straight to the wizard, because "the catalogue does not have this" is precisely the condition the wizard exists for. Anything that styled it as a miss would make every genuinely new product feel like a failure to list.
+
+**Candidates mean the record already exists**, and the seller joins it rather than writing a second one. Joining is the confirmation flow at M6, so S-22 shows the candidates and says plainly that the step is being built. It calls no endpoint that does not exist, invents no confirmation questions, and creates nothing.
+
+There is deliberately **no "none of these is mine" control**, and its absence is the design rather than an omission. A seller may not overrule the match result to declare their product new. Instead the screen suggests refining the name, since a closer name finds a closer match or none at all, and none is what opens the wizard.
+
+`match_score` is rendered as "94% match to what you typed". It is search relevance and is labelled as such. It is **not** the confidence score, which never leaves the server and appears in no type definition on this side.
+
+**Deviations from the plan.**
+- **`localStorage` is read through `useSyncExternalStore`, not in an effect.** The first version restored the job id and the draft with a mount effect, which this repository's React Compiler lint rules reject outright, and correctly: it cascades a render, and the lazy initial value alternative disagrees with the server HTML. Storage is now a subscribable store. That turned out better than what it replaced, because resuming needs no mount effect at all and a second tab finishing the same job now stops this one polling.
+- **A terminal job does not clear its own stored id.** The build plan says the id persists so closing the browser does not lose the result. Clearing on completion would have meant the answer existed only for whoever was still watching, so the flow clears it once the seller has acted, or the panel's dismiss does.
+- **The draft is persisted, not only the job id.** The plan requires the seller's input to stay on screen. Restoring a job without the words that produced it would hand a returning seller an empty form and ask them to remember.
+- **Images upload sequentially rather than in parallel.** The API assigns position as one past the highest, so eight concurrent uploads would race for the same position and land in arbitrary order. One at a time keeps the gallery in the order the seller chose.
+- **A retry is offered only for images that failed in transit.** A file the browser already judged too large or the wrong format will be refused again for the same reason, so retrying it would only repeat the refusal.
+- **An expired session is presented as "start the check again", not as an error.** The API answers `match_required`, and the reason is worth stating: the catalogue may have gained this very product while the session sat open.
+- **Removing an attribute row on step 3 is allowed; removing a generated combination is not.** These are different things and only one is forbidden. Step 3 is a form still being filled in and nothing has been generated. Step 4 has no remove control of any kind.
+- **One currency, LKR, fixed for the whole submission.** A currency selector is not in any M5 screen specification and the seeded catalogue is single currency. Prices are typed in rupees and converted to minor units by `parseMoneyToMinor`, so no float is ever sent.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking.**
+- X-04 still links to `/listings`, `/proposals`, and `/analytics`, which do not exist. Those are M6, M7, and M10. They were already there before this milestone and were left alone rather than quietly changing another milestone's navigation, but they are dead links today and worth a decision.
+- S-22 renders candidates and stops. When EP-21 and EP-22 land, the "Joining this record is not open yet" panel is what should be replaced, rather than left to age the way the M4 dashboard copy did.
+- The wizard lets a seller edit the product name on step 1 after matching ran against the original. EP-24 does not re-run matching, so a substantially changed name could describe a product that does exist. The screen says so in a note. If that turns out to matter, the fix belongs on the backend as a re-check at submit, not as a client side guess.
+- `WizardOutcome` links to the product page and back to the dashboard, and states plainly that managing prices from one place is still being built. It does **not** link to a listings screen, because there is none.
+- The `attach` limiter is 20 per hour per user and is easy to reach while testing the flow by hand.
+
+**Verified by.**
+- `npm run docs:check`, `npx tsc --noEmit`, `npm run lint`, and `npm run build` all clean
+- Against the live API through the authenticated proxy, with the queue worker running:
+  - A user with no store got **403 `store_required`** from the attach route
+  - Matching a seeded product name returned one candidate at score 1.0 with its image URL; attempting the wizard with it outstanding returned **422 `match_required`**
+  - Matching a genuinely new name returned **200 with `candidates: []`**, and the wizard then opened a session with six questions and an expiry 24 hours out
+  - A submission with one blank answer returned **422 `validation_failed` with the error keyed `answers.q3`**, which is what puts the seller back on that question rather than on a generic form error
+  - A complete submission with two attributes of two and three options, two combinations carried, returned **201 with `variants_generated: 6`, `attachments_created: 2`, `store_is_live: true`**
+  - An image uploaded against the returned slug answered 201; a PDF sent as `front.jpg` with `Content-Type: image/jpeg` was refused **`unsupported_media_type`**, so the API is judging the bytes rather than the claim
+  - With the provider forced to fail and the queue worker stopped, EP-23 returned **503** with `queued_job_id` at the top level, and EP-50 reported **`status: queued` with `result_type` and `result` both null**. After the provider recovered and the worker ran, EP-50 returned `completed`, `result_type: wizard_questions`, and the session the wizard resumes from
+  - The same job id read by a different signed in account returned **404**, not 403
+  - The wizard created product is publicly readable with no token, shows **all six** combinations with four at `seller_count: 0`, carries no forbidden field, and renders at `/products/{slug}`
 
 ---
 

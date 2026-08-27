@@ -42,6 +42,8 @@ export function AccountNav() {
       {seller && (
         <>
           <NavLink href="/dashboard">Dashboard</NavLink>
+          {/* The catalogue check, which is the only way into listing anything. */}
+          <NavLink href="/sell/attach">List a product</NavLink>
           <NavLink href="/listings">Listings</NavLink>
           <NavLink href="/proposals">Proposals</NavLink>
           <NavLink href="/analytics">Analytics</NavLink>

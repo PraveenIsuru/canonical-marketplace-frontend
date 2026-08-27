@@ -79,11 +79,28 @@ export const sessionUserSchema = z.object({
   store: sessionStoreSchema.nullable(),
 });
 
+/**
+ * EP-50, the queued job the X-01 panel polls.
+ *
+ * `search_interpretation` is in this list because seller catalogue search has queued
+ * jobs of that type since M3, and contract version 2 added it to the union after the
+ * original list omitted it. Leaving it out would make a perfectly valid job fail at
+ * the fetch boundary.
+ *
+ * `result_type` and `result` are **null until the job completes**, on a failed job
+ * included. There is nothing to resume until there is a result.
+ */
 export const jobSchema = z.object({
   id: z.string(),
   status: z.enum(['queued', 'processing', 'completed', 'failed']),
   result_type: z
-    .enum(['match_candidates', 'wizard_questions', 'confirmation_questions', 'verification_result'])
+    .enum([
+      'match_candidates',
+      'wizard_questions',
+      'confirmation_questions',
+      'verification_result',
+      'search_interpretation',
+    ])
     .nullable(),
   result: z.unknown(),
 });

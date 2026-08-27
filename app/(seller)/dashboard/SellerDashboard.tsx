@@ -100,13 +100,22 @@ export function SellerDashboard() {
             lists.
           </li>
         </ol>
-        {/*
-          The attach flow is M5. Saying so is more honest than a disabled button that
-          gives no reason, and stops a seller hunting for a control that is not there.
-        */}
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Attaching to a product is not available yet. It arrives with the listing flow.
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link
+            href="/sell/attach"
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            List a product
+          </Link>
+          {/*
+            The check comes first and is not a formality. It decides whether the seller
+            joins a record that exists or builds a new one, and saying so here avoids
+            the button reading as "create a listing".
+          */}
+          <span className="text-sm text-zinc-500 dark:text-zinc-400">
+            We check the catalogue first, then either join the record or build it.
+          </span>
+        </div>
       </Card>
 
       <Card className="flex flex-col gap-2">

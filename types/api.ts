@@ -81,11 +81,16 @@ export interface Money {
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 
+/**
+ * Added to the union by contract version 2. Seller catalogue search has queued jobs
+ * of type `search_interpretation` since M3; the original list simply omitted it.
+ */
 export type JobResultType =
   | 'match_candidates'
   | 'wizard_questions'
   | 'confirmation_questions'
   | 'verification_result'
+  | 'search_interpretation'
   | null;
 
 /** Polled by the X-01 queued job panel to recover a flow blocked by AI unavailability. */
