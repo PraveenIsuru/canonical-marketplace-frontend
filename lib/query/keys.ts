@@ -43,6 +43,7 @@ export const queryKeys = {
   },
   stores: {
     detail: (id: number) => ['stores', id] as const,
+    /** The seller's own full record (EP-54), which prefills the settings form. */
     mine: () => ['stores', 'mine'] as const,
     listings: () => ['stores', 'mine', 'listings'] as const,
     analytics: (from: string, to: string) => ['stores', 'mine', 'analytics', { from, to }] as const,

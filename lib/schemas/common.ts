@@ -53,6 +53,15 @@ export function cursorPaginated<T extends z.ZodTypeAny>(item: T) {
  */
 export const priceMinorSchema = z.number().int();
 
+/**
+ * The store carried on the session.
+ *
+ * Deliberately minimal, and the backend keeps it that way: every authenticated page
+ * makes this call. Its **presence** is the entire definition of the seller role, so
+ * the navigation derives seller entries from whether this is null, not from a flag.
+ *
+ * The settings form uses EP-54, which returns the full record.
+ */
 export const sessionStoreSchema = z.object({
   id: z.number().int(),
   name: z.string(),

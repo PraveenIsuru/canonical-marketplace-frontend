@@ -192,6 +192,41 @@ export const searchResponseSchema = z.object({
 export type SearchMode = z.infer<typeof searchModeSchema>;
 export type SearchResponse = z.infer<typeof searchResponseSchema>;
 
+/**
+ * The seller's own store (EP-16, EP-17, EP-18, EP-54).
+ *
+ * Coordinates and `geocode_source` are **nullable**. They stay null until geocoding
+ * succeeds or a pin is placed, and that null is the signal that routes the seller into
+ * manual pin placement. It must never be defaulted to a number.
+ *
+ * `geocoding_failed` appears **only on a write**. EP-54 omits it entirely, which is why
+ * it is optional here rather than nullable: absent and false are different facts.
+ */
+export const geocodeSourceSchema = z.enum(['locationiq', 'manual_pin']);
+
+export const ownStoreSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  category: z.string(),
+  contact_email: z.string(),
+  contact_phone: z.string().nullable(),
+  address_line: z.string(),
+  city: z.string(),
+  latitude: z.number().nullable(),
+  longitude: z.number().nullable(),
+  geocode_source: geocodeSourceSchema.nullable(),
+  rating: z.number().nullable(),
+  /*
+   * False throughout onboarding, and no endpoint in M4 can change it. A store becomes
+   * visible to buyers only once it holds at least one attachment.
+   */
+  is_live: z.boolean(),
+  geocoding_failed: z.boolean().optional(),
+});
+
+export type OwnStore = z.infer<typeof ownStoreSchema>;
+export type GeocodeSource = z.infer<typeof geocodeSourceSchema>;
+
 export type ProductSummary = z.infer<typeof productSummarySchema>;
 export type ProductDetail = z.infer<typeof productSchema>;
 export type Variant = z.infer<typeof variantSchema>;
