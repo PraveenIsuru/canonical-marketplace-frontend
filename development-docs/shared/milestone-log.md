@@ -27,7 +27,7 @@ Update the two status columns as milestones complete. Everything else in this fi
 | M3 Search | Done | Done |
 | M4 Seller onboarding | Done | Done |
 | M5 Wizard | Done | Done |
-| M6 Confirmation and proposals | Not started | Not started |
+| M6 Confirmation and proposals | Done | Not started |
 | M7 Peer review | Not started | Not started |
 | M8 Listings and wishlist | Not started | Not started |
 | M9 Community and verification | Not started | Not started |
@@ -706,6 +706,95 @@ There is deliberately **no "none of these is mine" control**, and its absence is
 
 ---
 
+### M6 The confirmation and proposal path, backend, 2026-08-27
+
+**Shipped.**
+- EP-19 `GET /api/stores/mine/listings`, EP-21 `POST /api/attach/confirm/start`, EP-22 `POST /api/attach/confirm/submit`
+- `ConfirmationService`, `RecordComparison`, `ConfirmationOutcome`, `StoreListingsQuery` with a `StoreListing` value object
+- `Proposal` and `ProposalReviewer` models, the `proposal_reviewers` table, and `attach_sessions.ai_job_id`
+- `AiProvider` grew `generateConfirmationQuestions` and `scoreConfirmationAnswers`, implemented in both adapters
+- `ProposalNeedsReview`, a queued mail notification, and the `CompleteConfirmation` job for the provider failure path
+
+**Contract.**
+- Contract version at time of writing: **bumped from 2 to 3**
+- Changes made to api-contract.md: `confirmation_outcome` added to `result_type` in section 8. **Section 11.4 is unchanged** and is what EP-22 returns
+- Error codes now live from this milestone: `confirmation_incomplete`, and `proposal_pending` and `already_attached` are now reachable for the first time
+
+**Response shapes the frontend should code against.**
+
+EP-21 returns:
+
+```json
+{ "data": { "session_id": "…", "product_id": 12, "questions": [{ "id": "q1", "attribute": "inputs", "text": "…" }], "expires_at": "…" } }
+```
+
+- A question's `attribute` names the field the answer is compared against: a core field like `name`, a specification key like `inputs`, or a variant attribute like `Colour`
+- **The record's current value is deliberately not sent.** It is stored on the session so the comparison works, but showing the seller the answer we expect would turn confirmation into a yes or no exercise, and the value of the flow is that they describe their own unit unled. There is a test asserting `current_value` appears in no response
+- Sessions last **24 hours**. An expired one returns 422 `validation_failed` keyed on `session_id`, and the seller restarts at EP-21, not at matching: the product is known and still exists, only the questions are stale
+
+EP-22 returns 201 for **both** outcomes, per section 11.4, distinguished by `outcome` and never by the status code:
+
+```json
+{ "data": { "outcome": "attached", "attachment_ids": [901] } }
+{ "data": { "outcome": "proposal_created", "proposal_id": 77, "review_closes_at": "…" } }
+```
+
+- The two carry **different keys on purpose**. A client that forgets to branch on `outcome` should fail loudly rather than render an attached state for a blocked seller
+- A proposal is **not a failure to attach**. It is the platform doing what it exists to do, and nothing in the interface should style it as an error
+
+EP-19 returns two lists in one call:
+
+```json
+{
+  "data": {
+    "listings": [
+      {
+        "product": { "id": 7, "slug": "…", "name": "…", "primary_image_url": null },
+        "variants": [{ "attachment_id": 901, "variant_id": 55, "attribute_values": {}, "price_minor": 450000, "currency": "LKR", "is_available": true }]
+      }
+    ],
+    "blocked": [
+      { "proposal_id": 77, "status": "pending", "review_opens_at": "…", "review_closes_at": "…", "changed_fields": ["inputs"], "product": { "id": 12, "slug": "…", "name": "…" } }
+    ]
+  }
+}
+```
+
+- **`blocked` is the half that matters and the reason this is one call.** A product with a proposal under review has no attachment row at all, so a screen built from `listings` alone shows nothing and leaves the seller wondering where their submission went
+- `status` is `pending` or `escalated`. Escalated means the window closed without enough votes and an administrator is deciding, so the seller is still blocked and still owed an answer
+- `changed_fields` names what is under review, so the screen can say what is being argued about rather than only that something is
+- Not paginated. It returns an object with two arrays rather than a list, so `Paginated<T>` does not apply and no second list shape is being introduced
+
+**Deviations from the plan.**
+- **`proposal_reviewers` is a new table, not in the schema design.** The schema says eligibility is "evaluated in application logic against attachment state when the proposal opened", which describes the rule correctly but cannot be implemented from the attachments table alone. Attachments change during the window: a store attaching on day two would look eligible to any query run on day three, and a store that detaches would look ineligible even though its vote must stand. Neither is recoverable once the moment has passed, so the set is written down at opening and never recalculated. A table rather than a JSONB array because M7's `to-review` listing needs to find a store's pending reviews by index.
+- **The proposing store is excluded from its own reviewer set.** A seller voting on their own proposal decides their own case, and where they are the only other attached store the vote would be unanimous by construction.
+- **A proposal can open with zero reviewers.** Nobody else carries the product. That is a real state rather than a bug: it reaches its closing time with no votes and escalates to an administrator, which is the defined outcome for an unreviewed proposal. No email is sent because there is nobody to send one to.
+- **`already_attached` is checked at EP-21, not only at EP-22.** The endpoint responsibilities list it only under submit, but generating questions costs a provider call for a flow that can only end in refusal, and UF-15's own edge case says an already attached seller belongs in price editing instead.
+- **The answer comparison is deterministic, not an AI call.** Comparing answers to the record is a system step in the specification, not a provider step, and putting the branch behind a second provider call would mean an identical submission could attach today and open a proposal tomorrow. Its limit, stated plainly: normalising case and spacing means `"  192   KHZ "` matches `"192 kHz"`, but `"two"` does not match `"2"` and would open a proposal. That is the safe direction to be wrong in. A spurious proposal is reviewed by people who know the product and costs three days; a missed one silently corrupts a record every seller shares.
+- **A queued confirmation submit completes the whole submission, not only the scoring.** Scoring alone would leave the write to some later request that might never come, and the seller would be told their submission was saved while nothing had been decided. A second submit while one is outstanding returns **the same job id**, so two jobs cannot race to create a duplicate proposal.
+- **EP-21's provider failure queues a job but no worker.** Regenerating questions is cheap to re-request and the seller has lost nothing but a moment. What must not be lost is a submission, which is why only that path carries a worker.
+- The confidence band threshold is **0.7**, in `config/ai.php`. The raw score is stored alongside the band so it can be retuned later without the past meaning something different than it did.
+
+**An M5 test that had been passing by luck.**
+
+`WizardTest` asserted on `Product::pluck('slug')` with no `ORDER BY`, so it was asserting on PostgreSQL's physical row order. M6 changed the churn on that table and the order flipped. The assertion was always about the slugs rather than their heap position, and it now orders explicitly. Not an M6 regression, but worth recording: an unordered `pluck` in an assertion is a test that will eventually fail for a reason unrelated to what it is testing.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking. S-24 and the listings dashboard are both unblocked.**
+- **Voting does not exist yet.** EP-27 to EP-30 are M7, so a reviewer who receives the email has nowhere to go. The email says voting closes in three days and describes what is being changed, but there is no screen behind it. That is the largest visible gap in the platform right now.
+- **Nothing resolves a proposal.** Every proposal created today stays `pending` until M7 ships the resolution matrix and the scheduled window sweep. `review_closes_at` passing has no effect on its own.
+- The reviewer email renders through the `log` mail driver locally, so it lands in `storage/logs/laravel.log` rather than an inbox.
+- EP-21 refuses with `already_attached` as well as `proposal_pending`. Handle both on S-22 and S-24.
+- A confirmation session's questions are keyed `q1`, `q2`, and so on, and the ids are only meaningful within that session. Submit the answers keyed by the ids the session returned.
+
+**Verified by.**
+- 27 tests in `tests/Feature/Api/ConfirmationTest.php` over HTTP, and 15 in `tests/Feature/Api/ConfirmationServiceTest.php` at the service level, split so a failure points at the decision rather than at the wiring around it
+- The build plan's stated M6 list, item by item: every question answered or `confirmation_incomplete`; no attachment row while a proposal is pending; a second attempt refused with `proposal_pending`; the confidence score written to the proposal and asserted absent from EP-21, EP-22 and EP-19 responses; the review window closing exactly three days after opening; and the attached store set recorded at opening with a store attaching mid window proven not to join it
+- Two invariants moved from todo to asserted: no seller route writes to a product, attribute, or variant, proven by walking the registered routes rather than by guessing at paths; and no attachment row exists while a proposal is pending, with the product's own values proven unchanged
+- `composer test` green: Pint passed, PHPStan level 7 with **0 errors**, 268 tests with 263 passed and 5 todo
+
+---
+
 ## 4. Open requests
 
 Things one side needs from the other that are not yet built. Remove a row only when it has shipped and been recorded in section 3.
@@ -715,5 +804,7 @@ Things one side needs from the other that are not yet built. Remove a row only w
 | Backend | 2026-08-26 | A Meilisearch server must be installed and running before M3 search work | **Closed 2026-08-26.** M3 shipped against it: the seeded catalogue is indexed and both search endpoints answer from it |
 | Backend | 2026-08-26 | Redis must be available before queued AI work needs Horizon's visibility, or the queue driver decision revisited | Open, and now less theoretical. M5 added three queued jobs, two of which a seller is actively waiting on. The database driver still works |
 | Frontend | 2026-08-26 | No endpoint lists live stores, so S-07 cannot be prerendered at build time through `generateStaticParams`. It renders on demand and caches for 300 seconds instead | Open, low priority. Only affects build time prerendering, not correctness |
+| Backend | 2026-08-27 | The confidential endpoint specification writes EP-22's outcome with `attachments` and `proposal` objects, while section 11.4 of the contract writes it with `attachment_ids`, `proposal_id`, and `review_closes_at`. The contract is what the client mirrors, so the contract was implemented. Worth deciding whether 11.4 should carry `review_opens_at` and the attachment prices as well, once S-24 is built and it is clear what the screen actually needs | Open. Not blocking: the current shape is sufficient to render both outcomes |
+| Backend | 2026-08-27 | EP-19 is not paginated. A store's listings are bounded in practice, but a seller carrying hundreds of products would return one large payload | Open, low priority. Revisit if it becomes a real shape rather than a hypothetical one |
 
 Use this table rather than guessing. A frontend screen that needs a field the contract does not define adds a row here. It does not invent a field name and hope.
