@@ -1,8 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
+import { addToWishlist } from '@/lib/api/wishlist';
+import { RequiresLogin } from '@/components/system/RequiresLogin';
 import { VariantSelector, describe } from '@/components/product/VariantSelector';
 import { LocationBar } from '@/components/seller/LocationBar';
 import { SellerRow } from '@/components/seller/SellerRow';
@@ -127,25 +130,119 @@ export function ProductInteractive({ product, variants, initialSellers }: Props)
 }
 
 /**
- * The wishlist entry point.
+ * The wishlist entry point (EP-37), wrapped in X-06.
  *
- * Bound to the selected variant, because a wishlist entry is saved per combination
- * rather than per product. The mutation itself belongs to M8, so this currently routes
- * an anonymous visitor to sign in and tells an authenticated one that it is coming,
- * rather than offering a control that would fail when clicked.
+ * Bound to the **selected variant**, because a wishlist entry is saved per combination
+ * rather than per product: the 128GB and the 256GB move in price independently, and an
+ * alert on "the product" could not say which one got cheaper.
+ *
+ * An anonymous visitor sees the same control, and choosing it takes them to sign in and
+ * straight back here with the variant they had chosen still in hand. The catalogue is
+ * public and stays public; one saveable control does not turn a product page into a
+ * login wall.
  */
 function WishlistAffordance({ product, selected }: { product: ProductDetail; selected: Variant | null }) {
+  const label = `Save ${selected ? describe(selected) : 'this'} to wishlist`;
+
+  /*
+   * The intent travels with the return path, so signing in finishes what the visitor
+   * started rather than dropping them on a page with no memory of why they left it.
+   */
+  const returnTo = selected
+    ? `/products/${product.slug}?save=${selected.id}`
+    : `/products/${product.slug}`;
+
+  return (
+    <RequiresLogin
+      returnTo={returnTo}
+      action="save this"
+      fallback={
+        <Button variant="secondary" disabled>
+          {label}
+        </Button>
+      }
+    >
+      <SaveToWishlist variant={selected} label={label} />
+    </RequiresLogin>
+  );
+}
+
+/**
+ * The save itself, for a signed in visitor.
+ *
+ * A repeat save is **not an error**. EP-37 answers 200 with the existing item, because
+ * a buyer pressing save twice meant it twice, so this reports saved either way and
+ * never apologises for it.
+ */
+function SaveToWishlist({ variant, label }: { variant: Variant | null; label: string }) {
+  const searchParams = useSearchParams();
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const attempted = useRef<number | null>(null);
+
+  const save = useCallback(async (variantId: number) => {
+    setSaving(true);
+    setFailed(false);
+
+    try {
+      await addToWishlist(variantId);
+      setSaved(true);
+    } catch {
+      setFailed(true);
+    }
+
+    setSaving(false);
+  }, []);
+
+  /*
+   * Finishing what X-06 started. A visitor who signed in from this page comes back with
+   * `?save=<variant>`, and the save runs once rather than waiting for them to press the
+   * button a second time.
+   */
+  useEffect(() => {
+    const requested = Number(searchParams.get('save'));
+
+    if (!Number.isInteger(requested) || requested < 1) return;
+    if (attempted.current === requested) return;
+
+    attempted.current = requested;
+    void save(requested);
+  }, [searchParams, save]);
+
+  if (variant === null) {
+    return (
+      <Button variant="secondary" disabled>
+        {label}
+      </Button>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <Button variant="secondary" disabled title="Saving to a wishlist arrives with the wishlist screens">
-        Save {selected ? describe(selected) : 'this'} to wishlist
+      <Button
+        variant="secondary"
+        onClick={() => save(variant.id)}
+        loading={saving}
+        disabled={saving}
+      >
+        {label}
       </Button>
-      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-        <Link href={`/login?next=/products/${product.slug}`} className="underline">
-          Sign in
-        </Link>{' '}
-        to save items. Wishlists are saved per version.
-      </span>
+
+      {saved && (
+        <span className="text-xs text-zinc-600 dark:text-zinc-400">
+          Saved.{' '}
+          <Link href="/wishlist" className="underline">
+            Your wishlist
+          </Link>
+        </span>
+      )}
+
+      {failed && (
+        <span className="text-xs text-red-600 dark:text-red-400">
+          That could not be saved. Try again.
+        </span>
+      )}
     </div>
   );
 }

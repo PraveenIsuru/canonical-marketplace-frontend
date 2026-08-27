@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMyListings } from '@/lib/api/confirmation';
 import { queryKeys } from '@/lib/query/keys';
-import { formatMoney } from '@/lib/format/money';
 import { PendingProposalNotice } from '@/components/proposal/PendingProposalNotice';
+import { ListingRow } from '@/components/seller/ListingRow';
 import { Alert, Card, EmptyState, Skeleton } from '@/components/ui';
 import type { BlockedProposal, StoreListing } from '@/types/confirmation';
 
@@ -21,16 +22,34 @@ import type { BlockedProposal, StoreListing } from '@/types/confirmation';
  * alone would show nothing for it and leave them believing their submission vanished.
  * `blocked` is what turns that silence into "the other sellers are checking".
  *
- * Read only in this milestone. Editing a price, toggling availability, and detaching
- * are EP-25 and EP-26, which land at M8. Rendering a disabled price field would imply
- * the control exists and is merely closed to this seller, so the screen says plainly
- * that editing is still being built instead.
+ * Editable as of M8. Each row carries a price, an availability toggle, and a detach,
+ * which are EP-25 and EP-26 and the **entire** write surface a seller has over the
+ * catalogue. Nothing here edits a product, an attribute, or a variant: those are shared
+ * by every seller carrying the record and change only through a proposal.
+ *
+ * Removing the last listing makes the store invisible to buyers. That is warned about
+ * before the seller commits, and confirmed afterwards from `store_is_live` in the
+ * EP-26 response rather than discovered on some later refetch.
  */
 export function ListingsPanel() {
+  const queryClient = useQueryClient();
+
+  /*
+   * Set from the EP-26 response, not from a refetch. `store_is_live: false` means this
+   * detach was the one that darkened the store, and the seller is told at that moment.
+   */
+  const [wentDark, setWentDark] = useState(false);
+
   const { data, isPending, isError, refetch } = useQuery({
     queryKey: queryKeys.stores.listings(),
     queryFn: getMyListings,
   });
+
+  function refresh() {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.stores.listings() });
+    // The store's own live flag rides on the session, which the dashboard reads.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.user.current() });
+  }
 
   if (isPending) {
     return (
@@ -57,6 +76,16 @@ export function ListingsPanel() {
   const { listings, blocked } = data;
   const hasNothing = listings.length === 0 && blocked.length === 0;
 
+  /*
+   * Every attachment the store holds, across products. A store goes dark when its last
+   * attachment goes, not its last product, so counting products here would fail to warn
+   * a seller removing the second of two versions of one product.
+   */
+  const totalListedVariants = listings.reduce(
+    (running, listing) => running + listing.variants.length,
+    0,
+  );
+
   return (
     <div className="flex flex-col gap-6 py-8">
       <div>
@@ -65,6 +94,26 @@ export function ListingsPanel() {
           The products your store carries, and anything waiting on review.
         </p>
       </div>
+
+      {/*
+        Straight from the EP-26 response. This is the moment the store stopped being
+        visible to buyers, and it is said here rather than left to be noticed.
+      */}
+      {wentDark && (
+        <Alert tone="warning" title="Your store is no longer visible to buyers">
+          <p>
+            That was your last listing, so your store has gone dark. Buyers cannot find
+            it, and it will not appear on any product page until you list something
+            again.
+          </p>
+          <p className="mt-2">
+            <Link href="/sell/attach" className="underline">
+              List a product
+            </Link>{' '}
+            to bring it back.
+          </p>
+        </Alert>
+      )}
 
       {hasNothing && (
         <EmptyState
@@ -136,44 +185,31 @@ export function ListingsPanel() {
 
               <ul className="flex flex-col gap-2">
                 {listing.variants.map((variant) => (
-                  <li
+                  <ListingRow
                     key={variant.attachment_id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800"
-                  >
-                    <span>
-                      {Object.entries(variant.attribute_values).length === 0
-                        ? 'Single default version'
-                        : Object.entries(variant.attribute_values)
-                            .map(([name, value]) => `${name}: ${value}`)
-                            .join(', ')}
-                    </span>
-
-                    <span className="flex items-center gap-3">
-                      {/* Divided by 100 for display only. The integer is what crosses
-                          the wire and what is stored. */}
-                      <span className="font-medium">
-                        {formatMoney(variant.price_minor, variant.currency)}
-                      </span>
-                      {!variant.is_available && (
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          marked unavailable
-                        </span>
-                      )}
-                    </span>
-                  </li>
+                    variant={variant}
+                    productName={listing.product.name}
+                    isLastListing={totalListedVariants === 1}
+                    onDetached={(storeIsLive) => {
+                      if (!storeIsLive) setWentDark(true);
+                      refresh();
+                    }}
+                    onChanged={refresh}
+                  />
                 ))}
               </ul>
             </Card>
           ))}
 
           {/*
-            Said once, at the bottom, rather than as a disabled control on every row.
-            A greyed out price field would imply the seller is not allowed to edit,
-            when in fact nobody can yet.
+            The boundary of what a seller may change, said once rather than implied by
+            what is missing. A seller who thinks a specification is wrong has a route,
+            and it is not this screen.
           */}
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Changing a price, marking something unavailable, and removing a listing are
-            still being built.
+            You set your own price and stock here. The product description, its
+            specifications, and its versions are shared by everyone selling it, so
+            changing one of those goes through the other sellers as a proposal.
           </p>
         </section>
       )}

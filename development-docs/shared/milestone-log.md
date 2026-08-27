@@ -29,7 +29,7 @@ Update the two status columns as milestones complete. Everything else in this fi
 | M5 Wizard | Done | Done |
 | M6 Confirmation and proposals | Done | Done |
 | M7 Peer review | Done | Done |
-| M8 Listings and wishlist | Not started | Not started |
+| M8 Listings and wishlist | Done | Done |
 | M9 Community and verification | Not started | Not started |
 | M10 Analytics and versions | Not started | Not started |
 | M11 Administration | Not started | Not started |
@@ -978,6 +978,126 @@ Two routes would have meant two URLs for one proposal, and a reviewer following 
 
 ---
 
+### M8 Listing management and alerts, backend, 2026-08-27
+
+**Shipped.**
+- EP-25 `PATCH /api/attachments/{id}`, EP-26 `DELETE /api/attachments/{id}`
+- EP-36 `GET /api/wishlist`, EP-37 `POST /api/wishlist`, EP-38 `DELETE /api/wishlist/{id}`
+- `ListingService` and `WishlistService`, `ListingController` and `WishlistController`
+- `NotifyPriceDrop` and `NotifyNearbyAvailability`, both queued, with the `PriceDropped` and `NearbyAvailability` mail notifications
+- `WishlistItem` model over the `wishlist_items` table, which had existed unused since M0
+- `config/alerts.php`, holding the nearby radius
+
+**Contract.**
+- Contract version at time of writing: **bumped from 4 to 5**
+- Changes made to api-contract.md: added **section 11.9**, the attachment update request and response, the detach response carrying `store_is_live`, the wishlist item, and the wishlist add request. No existing shape changed
+- Error codes now live from this milestone: **none**. `validation_failed`, `forbidden`, and `not_found` already covered everything these endpoints refuse
+
+**No migration was needed, and that is worth recording.**
+
+`wishlist_items` was created at M0 with `unique(user_id, variant_id)` and a `last_notified_price_minor` column, written before any endpoint existed. Both turned out to be exactly right: the unique index is what makes a repeated save safe to answer with the existing row, and `last_notified_price_minor` is the entire repeat suppression mechanism. M8 added a model over the table and nothing else.
+
+**The two alerts, and the rules that decide them.**
+
+**Price drop.** Dispatched from `ListingService::update` only when the new price is **strictly lower** than the previous one, which is read inside the same transaction and under a row lock so two concurrent updates cannot both decide they were the drop. Dispatched `afterCommit`, because an email is the one side effect in this platform that cannot be withdrawn and a rolled back price must not have announced a discount.
+
+The suppression rule lives in the job: a buyer already told about this price **or a lower one** hears nothing. Without it a seller moving a price up and down around a threshold sends an email on every downswing, and the buyer learns to ignore all of them. The notified price is stamped **after** sending, not before: sending twice because a job retried is a nuisance, but stamping a price the buyer was never told about would silence every future alert down to that figure, which is a fault they could never diagnose.
+
+Two further refusals in the job, both about not sending a useless email: an unavailable listing is not an offer, and a price that moved again before the job ran is not the price that was queued.
+
+**Nearby availability.** Hung off `Attachment::created` rather than off any controller, so **every** path that creates a listing is covered: confirmation, the wizard, and an approved proposal releasing a withheld listing. A future path is covered without anyone remembering to add it.
+
+Distance is decided in PostGIS with `ST_DWithin` against the buyer's own coordinates, matching how the seller list already works, so it can use the spatial index rather than measuring every wishlist row in PHP. The radius is `config/alerts.php`, defaulting to 25 km, because the right figure is a question about geography rather than about code.
+
+**A buyer who never shared a location receives this alert for nothing.** That is the documented cost of declining the location prompt, not a fault. It deliberately does not fall back to notifying everybody, which would turn a useful alert into a marketing email.
+
+**Deviations from the plan.**
+- **The live flag needed no new work.** `Attachment::booted` has hooked `created` and `deleted` to `recomputeLiveFlag()` since M4, so invariant 12 was already enforced structurally. What M8 added is the test coverage the build plan asked for, and one rule in `ListingService::detach`: the row is deleted **through the model**, never by a bulk query, because a bulk delete skips model events and would leave a store selling to buyers with nothing on its shelves.
+- **EP-26 answers `store_is_live` rather than 204.** A seller removing their last listing has just made their store invisible, and that is the one thing they need to be told at that moment. A bare 204 would make the interface fetch the store again to find out.
+- **A repeat wishlist save answers 200 with the existing item rather than 409.** A buyer pressing save twice expressed the same intent twice. Recorded in the contract so the client does not code an error path for it.
+- **`lowest_price_minor` is null when nobody carries the variant**, and unavailable listings are excluded from it. A null there is a normal state rather than missing data: saving a combination no seller stocks is exactly what the nearby alert exists for.
+- **`last_notified_price_minor` is not serialised on EP-36.** It is bookkeeping for the alert job, and showing a buyer the price they were last told about invites them to read it as a price history, which it is not.
+- **EP-25 and EP-26 sit behind the `writes` limiter, not `attach`.** Neither costs a provider call, and a seller repricing a shelf of stock should not burn an attach quota that exists to protect the AI budget.
+- **Ownership is checked in the service, not the controller**, and answers **404 rather than 403**. Confirming that attachment 901 exists but belongs to somebody else tells a competitor something about their inventory.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking. S-21's editing controls, S-14, and X-06 are all unblocked.**
+- **The alerts are invisible in the interface, by design.** Invariant 10 holds: email only, no bell, no notification centre. There is no endpoint to read past alerts from and none should be added. A buyer who does not read the email does not find out.
+- **Locally the mail driver is `log`**, so both alerts land in `storage/logs/laravel.log` rather than an inbox. The queue worker must be running or nothing sends at all.
+- **Nothing recomputes `lowest_price_minor` for a cached catalogue response.** Catalogue caching is M12, so this is only a note for when it lands: a price change invalidates a product's cached seller list.
+- **A detached seller keeps nothing.** There is no undo, no soft delete on attachments, and re-listing means going back through confirmation. That is intended, and worth the interface warning about before the last listing goes.
+- **Escalated proposals are still a dead end until M11**, unchanged by this milestone.
+
+**Verified by.**
+- 36 tests in `tests/Feature/Api/ListingManagementTest.php`
+- The build plan's stated M8 list, item by item: a price decrease queuing alerts and an increase not doing so, a price set to what it already was queuing nothing, repeat alerts suppressed by the last notified price and still firing when the price falls below it, the live flag recomputed on both creation and deletion, zero, negative, and decimal prices rejected, an empty update rejected rather than reported as success, and the product still answering at its own URL with `seller_count: 0` after its last seller leaves
+- Invariant 1 asserted directly: a PATCH carrying `name`, `category`, and `attribute_values` alongside a price changes the price and leaves the product untouched
+- Ownership refusals on both endpoints, wishlist isolation between buyers, and one wishlist per user rather than per role
+- The nearby alert asserted at three distances: a buyer 2 km away is told, one 300 km away is not, and one with no coordinates is not
+- `composer test` green: Pint passed, PHPStan level 7 with **0 errors**, 345 tests with 339 passed and 5 todo
+
+---
+
+### M8 Listings and wishlist, frontend, 2026-08-27
+
+**Shipped.**
+- S-21 completed: `components/seller/ListingRow.tsx`, an editable price, an availability toggle, and detach on `/listings`
+- S-14 `/wishlist`, the buyer's saved variants
+- X-06 `components/system/RequiresLogin.tsx`, wrapping the save action on the product page
+- The wishlist affordance on S-04 is live and targets the **selected variant**
+- `lib/api/wishlist.ts`, `lib/schemas/wishlist.ts`, `types/wishlist.ts`
+- The M5 copy on the listings screen saying price editing was still being built is replaced by the real controls
+
+**Contract.**
+- Contract version at time of writing: 5
+- Changes made to api-contract.md: none. This side mirrors it
+- Error codes handled on screen: `validation_failed` (422, keyed on `price_minor`), and 404 for a listing that is not the caller's
+- One nullability the contract does not state is handled and raised as an open request, below
+
+**`currency` is nullable on a wishlist item, and 11.9 does not say so.**
+
+The example in section 11.9 shows `"currency": "LKR"` beside a populated price. The API returns **null for both** when nobody carries the variant, which is the state the same section describes in prose two paragraphs later. The schema mirrors what the API actually does, because refusing null there would break the wishlist's most ordinary state, and it is raised for the backend to write down rather than left as a silent divergence.
+
+**How the dark store warning works, which is the part worth getting right.**
+
+A store is visible to buyers only while it holds at least one attachment, so a seller removing their last listing makes their own store invisible. That is warned about **twice, deliberately**:
+
+- **Before**, in the detach dialog, computed from the listings already on screen. The count is over **attachments across all products**, not products, because a seller removing the second of two versions of one product is removing their last attachment just the same.
+- **After**, from `store_is_live` in the EP-26 response. This is the authoritative answer and it is why the endpoint returns the flag at all. A notice appears at the top of the screen saying the store has gone dark, rather than the seller discovering it later from a dashboard that happens to reload.
+
+A warning that only arrives after the fact is not a warning, and one that only arrives before it is a guess. Both, from different sources, is the honest arrangement.
+
+**Deviations from the plan.**
+- **Only what changed is sent to EP-25.** The row tracks price and availability separately and sends whichever the seller actually touched. Restating an untouched price would look like a price change to the alert logic behind it, and a seller marking something out of stock would send buyers an email about a price that never moved.
+- **Zero and negative prices are refused before the round trip**, by the existing `parseMoneyToMinor`, which already returned null for them. The server side refusal is handled too and rendered from `errors.price_minor`, as a backstop rather than the normal path.
+- **X-06 wraps the action rather than guarding the route.** The public catalogue is browsable with no account, and turning a product page into a login wall because it carries one saveable control would trade the whole public catalogue for one button. An anonymous visitor sees the same control and choosing it signs them in and brings them back.
+- **The intent survives the login round trip.** The return path carries `?save=<variant>`, and the product page finishes the save once on arrival. A visitor who picked the 256GB and then signed in gets the 256GB saved, not the default.
+- **A repeat save is reported as saved, never as a conflict.** EP-37 answers 200 with the existing item, so there is no error path in the interface for it and none should be added.
+- **The listings screen says what a seller may not change, once, at the bottom.** Price and stock are theirs; the description, the specifications, and the versions are shared by everyone selling the record and move only through a proposal. Saying so is better than leaving the seller to infer it from an absence.
+- **Removal on the wishlist is not optimistic.** It invalidates and refetches. An optimistic remove that failed would put the row back with no explanation, and the list is small enough that the round trip is not felt.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking on the backend.**
+- **The alerts have no screen and never will.** Invariant 10 holds: email only, no bell, no notification centre. A buyer who does not read the email does not find out, and the wishlist page says so plainly rather than implying a history exists somewhere.
+- **A nearby stock alert silently does nothing for a buyer with no location.** The wishlist page links to the account screen to add one, but nothing on screen tells a buyer their saved items are only half working. Worth revisiting if it proves confusing.
+- **Detach has no undo.** Re-listing means going back through the confirmation questions, and the dialog says so.
+- **A price the seller changes is not reflected in a cached catalogue page** until M12 wires revalidation. Locally there is no cache, so this is a note for later rather than a current fault.
+- X-04 still links to `/analytics`, which is M10 and remains a dead link. `/wishlist` and `/listings` are both live.
+- Escalated proposals are still a dead end until M11, unchanged by this milestone.
+
+**Verified by.**
+- `npm run docs:check`, `npx tsc --noEmit`, `npm run lint`, and `npm run build` all clean, with `/products/[slug]` still statically generated and no Suspense or deopt warnings
+- Against the live API through the authenticated proxy:
+  - A seller changed a listing to **2500 and out of stock**, and both persisted on a refetch of EP-19
+  - **0 and -5 were refused with 422** and `errors.price_minor` reading "A price must be greater than zero"
+  - Detaching one of several listings answered **`store_is_live: true`**; detaching a store's **last** listing answered **`store_is_live: false`**, after which the store answered 404 publicly and the product still answered with `seller_count: 8`
+  - A wishlist add and an immediate repeat both answered **200 with the same item id**
+  - EP-36 returned both states in one list: a priced item at `235000 LKR` from 8 sellers, and one with **`lowest_price_minor: null`, `currency: null`, `seller_count: 0`**
+  - Removal answered `{"removed": true}`
+- `/wishlist` and `/listings` render 200 for a signed in user and **307 to `/login?next=…`** anonymously, while `/products/{slug}` stays **200 with no token**, so invariant 7 is intact
+
+---
+
 ## 4. Open requests
 
 Things one side needs from the other that are not yet built. Remove a row only when it has shipped and been recorded in section 3.
@@ -992,5 +1112,7 @@ Things one side needs from the other that are not yet built. Remove a row only w
 | Frontend | 2026-08-27 | **S-26 and S-27 could not be built at M6.** The build plan lists them under this milestone, but S-26 needs EP-27 and S-27 needs EP-29, both of which are M7. Building either would have meant inventing a shape the backend has not defined. They should be built alongside M7's own screens once those endpoints land, and the "still being built" copy on the S-24 outcome panel and in X-05 replaced with real links then | **Closed 2026-08-27.** Both shipped at frontend M7 against EP-27 and EP-29. S-27 shares the `/proposals/[id]` route with S-29, because EP-29 serves the proposer and the reviewers from one id. The "still being built" copy on the S-24 outcome panel and in X-05 is replaced by real links |
 
 | Backend | 2026-08-27 | **Nothing resolves an escalated proposal.** The matrix escalates on a tie, on no votes at all, and on high confidence with peers against, and EP-41 and EP-42 that act on that are M11. A seller whose proposal escalates stays blocked with no route out | Open. Not blocking the frontend, which renders escalated as a blocked state already. Blocking for the seller it happens to |
+
+| Frontend | 2026-08-27 | **Section 11.9 does not state that a wishlist item's `currency` is nullable.** The example shows a populated pair, and the API returns `lowest_price_minor: null` and `currency: null` together when nobody carries the variant, which the same section describes in prose. The frontend schema mirrors the API. Worth writing the null case into the example or a sentence so the next client does not refuse it | Open. Not blocking: the shape is handled, and it is the contract wording that lags the behaviour |
 
 Use this table rather than guessing. A frontend screen that needs a field the contract does not define adds a row here. It does not invent a field name and hope.
