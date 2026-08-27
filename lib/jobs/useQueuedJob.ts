@@ -9,7 +9,7 @@ import {
   serverJobIdSnapshot,
   storeJobId,
   subscribe,
-  type AttachFlow,
+  type QueuedFlow,
 } from '@/lib/jobs/storage';
 import type { QueuedJob } from '@/types/api';
 
@@ -55,7 +55,7 @@ export interface QueuedJobState {
  * another account or has been cleaned up, and neither is worth reporting to someone
  * who did not know the id existed.
  */
-export function useQueuedJob(flow: AttachFlow): QueuedJobState {
+export function useQueuedJob(flow: QueuedFlow): QueuedJobState {
   const jobId = useSyncExternalStore(
     subscribe,
     () => readStoredJobId(flow),

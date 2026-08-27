@@ -19,7 +19,14 @@ import { AUTH_COOKIE } from '@/lib/auth/session';
 const PROTECTED_PREFIXES = [
   // Buyer
   '/wishlist',
-  '/verification',
+  /*
+   * M9. The M0 list guessed `/verification`; the screen that shipped is `/verify/{slug}`,
+   * scoped to a product because verification always is.
+   *
+   * Safe against `/verify-email`, which is a public auth screen: the check below matches
+   * an exact path or one followed by a slash, and `/verify-email` is neither.
+   */
+  '/verify',
   '/account',
   // Seller onboarding
   '/sell',

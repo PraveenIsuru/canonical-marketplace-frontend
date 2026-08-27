@@ -127,14 +127,28 @@ export default async function ProductPage({ params }: Params) {
         Omitted entirely when the endpoint returns null. Rendering an empty panel would
         look like a section that failed to load.
       */}
-      {summary && (
-        <section className="flex flex-col gap-3">
-          <h2 className="text-lg font-medium">What owners say</h2>
+      {/*
+        The discussion, live as of M9. Linked whether or not a summary exists: a product
+        nobody has written about yet is exactly where an owner might be first, and the
+        summary is only generated once there are a few posts to describe.
+      */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-lg font-medium">What owners say</h2>
+        {summary && (
           <Card>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">{summary.summary}</p>
           </Card>
-        </section>
-      )}
+        )}
+        <p className="text-sm">
+          <Link href={`/products/${product.slug}/community`} className="underline">
+            {summary ? 'Read the discussion' : 'See what owners are saying'}
+          </Link>
+          <span className="text-zinc-500 dark:text-zinc-400">
+            {' '}
+            Everyone posting has proved they own it.
+          </span>
+        </p>
+      </section>
 
       <ProductInteractive product={product} variants={variants} initialSellers={sellers.data} />
 

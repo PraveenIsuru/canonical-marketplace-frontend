@@ -25,11 +25,20 @@ import type { ProductDraft } from '@/types/attach';
 /**
  * The flows that can block on the provider. Each keeps its own job id.
  *
- * Separate keys rather than one shared id, because a seller can plausibly have a match
- * queued and a confirmation queued at the same time, and resuming the wrong one would
- * put them back into a flow they had already left.
+ * Separate keys rather than one shared id, because a person can plausibly have more
+ * than one queued at a time, and resuming the wrong one would put them back into a
+ * flow they had already left.
+ *
+ * Renamed from `AttachFlow` at M9. Verification is a buyer proving they own a product,
+ * which has nothing to do with attaching, and the old name would have made this union
+ * look like the wrong place for it.
+ *
+ * `verification` is the one flow whose authoritative resume point is **not** this
+ * store: EP-33 reports `pending_job_id` per product, so a buyer with two verifications
+ * outstanding is answered correctly by the API where a single browser key could not
+ * tell them apart. The stored id is a convenience for the common single case.
  */
-export type AttachFlow = 'match' | 'wizard' | 'confirmation';
+export type QueuedFlow = 'match' | 'wizard' | 'confirmation' | 'verification';
 
 const JOB_KEY_PREFIX = 'canonical:queued-job:';
 const DRAFT_KEY = 'canonical:attach-draft';
@@ -93,7 +102,7 @@ export function subscribe(listener: () => void): () => void {
 |--------------------------------------------------------------------------
 */
 
-export function readStoredJobId(flow: AttachFlow): string | null {
+export function readStoredJobId(flow: QueuedFlow): string | null {
   if (typeof window === 'undefined') return null;
 
   return read(`${JOB_KEY_PREFIX}${flow}`);
@@ -104,14 +113,14 @@ export function serverJobIdSnapshot(): null {
   return null;
 }
 
-export function storeJobId(flow: AttachFlow, jobId: string): void {
+export function storeJobId(flow: QueuedFlow, jobId: string): void {
   if (typeof window === 'undefined') return;
 
   write(`${JOB_KEY_PREFIX}${flow}`, jobId);
   notify();
 }
 
-export function clearStoredJobId(flow: AttachFlow): void {
+export function clearStoredJobId(flow: QueuedFlow): void {
   if (typeof window === 'undefined') return;
 
   remove(`${JOB_KEY_PREFIX}${flow}`);
