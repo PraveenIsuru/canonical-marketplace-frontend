@@ -15,8 +15,15 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { AUTH_COOKIE } from '@/lib/auth/session';
 
-/** Every prefix that requires a token. Access level is enforced by the API, not here. */
-const PROTECTED_PREFIXES = [
+/**
+ * Every prefix that requires a token. Access level is enforced by the API, not here.
+ *
+ * Exported since M12, because `app/robots.ts` disallows exactly these and a second
+ * hand written list would drift the first time a route was added. There is one answer
+ * to "which routes are behind a login", and both the redirect and the crawl rules read
+ * it.
+ */
+export const PROTECTED_PREFIXES = [
   // Buyer
   '/wishlist',
   /*

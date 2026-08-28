@@ -40,21 +40,103 @@ export function VariantSelector({ product, variants, selected, onSelect }: Props
     return <DropdownSelector product={product} variants={variants} selected={selected} onSelect={onSelect} />;
   }
 
+  return <ButtonGridSelector product={product} variants={variants} selected={selected} onSelect={onSelect} />;
+}
+
+/**
+ * The flat button grid, for products with a manageable number of combinations.
+ *
+ * ## Why this handles arrow keys
+ *
+ * The group announces itself as a `radiogroup` and each button as a `radio`, which is
+ * the right description: exactly one combination is chosen at a time. But that role
+ * carries a promise. A screen reader tells somebody they are on "radio button, 3 of 6",
+ * and the keyboard convention for a radio group is that arrow keys move between the
+ * options while Tab leaves the group entirely.
+ *
+ * Announcing the role without implementing the keys is worse than using plain buttons
+ * would have been, because it describes behaviour the component does not have and
+ * leaves somebody pressing an arrow key that does nothing. Added at M12, during the
+ * accessibility pass, on the most important public screen in the system.
+ *
+ * A roving tabindex is what makes Tab leave the group rather than walking through every
+ * combination: only the selected option is reachable by Tab, and the arrows move within.
+ */
+function ButtonGridSelector({ variants, selected, onSelect }: Props) {
+  const selectedIndex = Math.max(
+    0,
+    variants.findIndex((variant) => variant.id === selected?.id),
+  );
+
+  /**
+   * Arrow keys move and select in one action, which is the radio group convention
+   * rather than an interpretation of it: in a radio group, moving *is* choosing.
+   *
+   * Wraps at both ends, and Home and End jump to the extremes, because a product with
+   * forty combinations is a long way to hold an arrow key.
+   */
+  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
+    const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
+
+    if (!keys.includes(event.key)) return;
+
+    // The page would otherwise scroll under the arrow keys while the selection moved.
+    event.preventDefault();
+
+    const last = variants.length - 1;
+
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? last
+          : event.key === 'ArrowRight' || event.key === 'ArrowDown'
+            ? (selectedIndex + 1) % variants.length
+            : (selectedIndex - 1 + variants.length) % variants.length;
+
+    const variant = variants[next];
+
+    if (variant) {
+      onSelect(variant);
+
+      /*
+       * Focus follows the selection. Without this the browser keeps focus on the button
+       * that has just become untabbable, and the next arrow press comes from nowhere.
+       */
+      event.currentTarget.querySelector<HTMLButtonElement>(`[data-variant="${variant.id}"]`)?.focus();
+    }
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-sm font-medium">Choose a version</h2>
+      <h2 id="variant-selector-label" className="text-sm font-medium">
+        Choose a version
+      </h2>
 
-      <div role="radiogroup" aria-label="Variant" className="flex flex-wrap gap-2">
-        {variants.map((variant) => {
+      <div
+        role="radiogroup"
+        aria-labelledby="variant-selector-label"
+        onKeyDown={onKeyDown}
+        className="flex flex-wrap gap-2"
+      >
+        {variants.map((variant, index) => {
           const carried = variant.seller_count > 0;
           const isSelected = selected?.id === variant.id;
 
           return (
             <button
               key={variant.id}
+              data-variant={variant.id}
               type="button"
               role="radio"
               aria-checked={isSelected}
+              /*
+               * The roving tabindex. Only one button in the group is a tab stop, so Tab
+               * moves past the whole selector rather than through every combination,
+               * and the arrows move within it. Falls back to the first option when
+               * nothing is selected yet, so the group is always reachable.
+               */
+              tabIndex={index === selectedIndex ? 0 : -1}
               onClick={() => onSelect(variant)}
               className={cn(
                 'flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left text-sm transition-colors',

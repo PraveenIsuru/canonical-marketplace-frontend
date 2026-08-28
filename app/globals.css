@@ -24,3 +24,21 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * A visible keyboard focus ring everywhere, added at M12.
+ *
+ * Button and Input define their own, so the controls that were built as components
+ * were already covered. What was not covered is every plain link, and the public pages
+ * are largely made of those: breadcrumbs, category chips, seller contact details,
+ * product cards. Those fell back to the browser default ring, which on the dark theme
+ * is a thin dark outline against a near black background and is close to invisible.
+ *
+ * `:focus-visible` rather than `:focus`, so it appears for keyboard navigation and not
+ * on every mouse click.
+ */
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
+}

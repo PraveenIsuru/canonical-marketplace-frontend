@@ -188,9 +188,22 @@ export async function getSellers(slug: string, options: SellerListOptions = {}):
       page: options.page,
     },
     next: {
-      // 30 seconds for the shared list: price and availability change independently of
-      // the version chain, so there is no invalidation signal, only a short lifetime.
-      revalidate: personalised ? 0 : (options.revalidate ?? 30),
+      /*
+       * The shared list's default lifetime, and the M12 resolution of the mismatch M10
+       * noted.
+       *
+       * Next takes the **shortest** revalidate across every fetch in a route, so a
+       * short default here does not merely affect this call: it silently shortens
+       * whatever page embeds it. The old default of 30 seconds was dragging S-04 from
+       * its declared 300 down to 30, which meant the most important static page in the
+       * system was being rebuilt ten times more often than anybody had asked for.
+       *
+       * The default now matches the rest of the catalogue, and the two callers that
+       * want something else say so. S-04 states 300 to agree with itself, and S-05
+       * passes 0 because a screen whose entire purpose is showing live prices should
+       * not serve one from five minutes ago.
+       */
+      revalidate: personalised ? 0 : (options.revalidate ?? CATALOGUE_REVALIDATE_SECONDS),
     },
   });
 

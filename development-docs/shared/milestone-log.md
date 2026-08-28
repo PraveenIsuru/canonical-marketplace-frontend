@@ -33,7 +33,7 @@ Update the two status columns as milestones complete. Everything else in this fi
 | M9 Community and verification | Done | Done |
 | M10 Analytics and versions | Done | Done |
 | M11 Administration | Done | Done |
-| M12 Caching and revalidation | Not started | Not started |
+| M12 Caching and revalidation | Done | Done |
 
 Values: `Not started`, `In progress`, `Done`.
 
@@ -1518,6 +1518,178 @@ S-36 compared `confirming === data.status`, a `Decision` against a `ProposalStat
 
 ---
 
+### M12 Caching, revalidation, and hardening, backend, 2026-08-28
+
+**Shipped.**
+- **EP-51** dispatched as a queued job on every version creation, and on nothing else
+- Catalogue response caching across EP-08, EP-09, EP-10, EP-12, EP-13, and EP-53, invalidated by the writes that make it wrong rather than by a timer
+- The **live flag reconciliation job**, closing the hole M8 named
+- **Horizon installed and configured**, with two supervisors, three named queues, and a wait threshold on each
+- The two existing scheduled commands moved onto a monitored queue, and a third added
+- **`maintenance:health`**, which is the monitoring the build plan asked for on the review window sweep
+- `app/Jobs/`: `RevalidateProductPage`, `ResolveExpiredReviewWindows`, `DeleteOrphanedVerificationPhotographs`, `ReconcileStoreLiveFlags`
+- `app/Services/Catalogue/CatalogueCache.php`, `app/Concerns/InvalidatesCatalogueCache.php`
+- `config/frontend.php`, `config/catalogue.php`, `config/maintenance.php`, `config/horizon.php`
+
+**Contract.**
+- Contract version at time of writing: **9**, bumped by this milestone
+- Changes made to api-contract.md: **EP-51's path corrected from `/api/internal/revalidate` to `/api/revalidate`**, and the request, response, and refusal shapes written out. The `internal` segment existed only in that table. The frontend build plan specifies `app/api/revalidate/route.ts`, the client has hosted the handler there since M0, and M0's own verification step calls `/api/revalidate`, so the contract was describing a path nothing had ever served. Corrected rather than implemented, because one table disagreeing with two documents and a shipped route handler is the table being wrong
+- Error codes now live: **none new.** EP-51's refusals are `unauthenticated`, `validation_failed`, and `misconfigured`, all answered by the client rather than by this API
+
+**What EP-51 fires on, and why it cannot fire on anything else.**
+
+The dispatch is inside `ProductVersionService::record()`, which is the single place a version row is written. Invariant 6 says a version exists for an accepted proposal, an administrator edit, and the wizard creating version 1, and for nothing else. Hanging the dispatch off that one method rather than off each of the four callers is what makes "fires only on a version" a property of the code instead of a rule four call sites have to remember. **A rejected proposal writes no version, so it reaches nothing that could fire.** There is no branch to get wrong.
+
+Dispatched with `afterCommit`, so a version that rolls back never triggers a rebuild, and queued, so a client that is slow or down cannot fail the request that created the version.
+
+**Deviations from the plan.**
+- **The catalogue cache uses generation counters, not cache tags.** Tags are a Redis and Memcached feature. A tagged implementation would work in production and silently stop invalidating anywhere Redis was not configured, and the symptom would be a product page serving last week's specifications with nothing in any log to say why. A generation counter needs only get and put, so it behaves identically on the database store used here and on Redis in production. **The cache that is tested locally is the cache that runs**, which matters more than tag ergonomics.
+- **Generations are microsecond stamps rather than an incrementing count.** An evicted counter restarts at zero and hands out namespaces that already hold entries, which serves genuinely stale data. An evicted stamp produces a number larger than every one before it, so the worst case is a rebuild.
+- **Invalidation hangs off the models, not the services.** The same reasoning `recomputeLiveFlag` already used: a future write path is covered without whoever writes it knowing this layer exists. `Product`, `Attachment`, `Store`, `ProductImage`, and `CommunitySummary` each say when a catalogue read has gone wrong.
+- **EP-11, the seller list, is not cached and will not be.** Its ordering depends on the buyer's coordinates, so a shared entry would be wrong for somebody and an entry keyed by coordinates would never get a hit. There is a test asserting two buyers in different cities get different orderings, so this cannot be quietly changed later.
+- **The store profile's visibility check sits outside the cache.** A cached 200 would keep a dark store reachable by anybody holding its URL, which is the one thing EP-13 must get right.
+- **The category list moved onto the catalogue generation and lost its private key.** It used to expire on a timer and nothing else, so a new category could be up to an hour late appearing in the filter. That was a small existing bug and this closes it.
+- **The two scheduled commands became queued jobs, and the commands became thin callers of them.** `proposals:sweep` and `verification:cleanup` still exist, still take the same options, and run the same code inline. What changed is that the scheduled path now goes through a queue Horizon watches, so a failure is a row in the failed jobs list rather than a line in a log nobody reads.
+- **`withoutOverlapping` on the schedule became `ShouldBeUnique` on the jobs.** Dispatching moved the overlap risk rather than removing it: the scheduler can no longer overlap, but two sweeps could sit in a backlog and be taken by two workers at once. That is the race the row lock in the resolution service defends against, and not starting it is cheaper than winning it.
+- **The commands call `handle` through the container rather than using `dispatch_sync`.** `dispatch_sync` hands the job to the sync connection, which serialises it and runs a copy, so everything the run recorded about itself is lost with that copy. This was found by a failing test rather than by reading, and it would have made all three commands report "nothing to do" while quietly doing the work.
+- **Monitoring checks outcomes, not whether jobs ran.** This is the largest deviation and the one worth reading. The obvious design is a heartbeat per job with an alarm when it goes stale. It answers the wrong question: a sweep that ran on time and resolved nothing because of a bug leaves a perfectly fresh heartbeat and a seller who is still blocked. `maintenance:health` asks instead whether a proposal is sitting past its review window, whether a photograph has outlived its verification, and whether a live flag disagrees with its attachments. Those are true regardless of cause, so a stopped scheduler, a dead worker, a queue pointed at nothing, and a mistake in the matrix all surface the same way.
+- **Horizon and the health check cover different halves and neither replaces the other.** Horizon can say a job threw, how long it waited, and how many are queued. It cannot say that a job which is not being dispatched at all should have been, because there is nothing to see.
+- **`default` has the tightest Horizon wait threshold, not `maintenance`.** Not the ordering of importance, deliberately. `default` carries the AI jobs X-01 polls for, so a wait there is a person watching a spinner. The sweep matters more and runs hourly, so a ninety second wait on it means nothing, and alarming on that would train somebody to ignore the alert that does matter. The sweep's consequence is covered by the health check instead.
+- **Two Horizon supervisors, not one.** Revalidation is the only work in the platform that waits on an external service, so an unreachable client can produce a long backlog of it. Sharing a supervisor with the sweep would put sellers waiting to be unblocked behind a queue of cache invalidations. There is a test asserting the two never share a supervisor.
+
+**Redis and Horizon: what works without them and what does not.**
+
+The open request from M5 asked for this to be settled. It is now settled in the only honest way available on this machine, which is that **it is partly closed**.
+
+| | Without Redis, as this machine runs today | With Redis |
+|---|---|---|
+| EP-51 revalidation | **Works.** Queued on the database driver, dispatched after commit, retried and failed gracefully | Same behaviour, faster queue |
+| Catalogue caching | **Works.** Database cache store, same keys, same invalidation, same tests | Same behaviour, much faster reads. `CATALOGUE_CACHE_STORE=redis` moves only the catalogue |
+| Live flag reconciliation | **Works** | Same |
+| `maintenance:health` | **Works.** Reads the database and the disk, and needs no queue at all | Same |
+| Scheduled dispatch of all three jobs | **Works.** They land in the `jobs` table and a worker takes them | Same |
+| Horizon dashboard, metrics, failed job list, wait thresholds | **Does not run** | Works |
+
+**Horizon cannot run on this development machine at all, and that is a platform limit rather than a configuration gap.** It requires the `pcntl` and `posix` extensions, which do not exist on Windows, and it requires a Redis server, which is not installed and has no phpredis or predis client to reach one with. `php artisan horizon` and `horizon:status` fail here with a Redis connection error, which is the correct and expected outcome.
+
+What was done about it: the package is installed and its configuration is real rather than invented, so it is live the moment it runs somewhere that can run it. `composer.json` declares `ext-pcntl` and `ext-posix` under `config.platform`, which is Composer's documented mechanism for "the machine I install on differs from the machine I deploy to". That is why `composer install` still works here without flags, and it is worth knowing it is there.
+
+`horizon:snapshot` is scheduled but skips itself while `queue.default` is not `redis`, so this machine does not accumulate a failed scheduled command every five minutes for work it was never going to do.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking.**
+- **EP-51's path in the contract changed.** The client was already right; it is the contract that moved to match. No client change is needed, but the frontend copy of the contract must be refreshed, which the shared folder copy does.
+- **EP-51 is off by default in the test suite** (`REVALIDATE_ENABLED=false` in `phpunit.xml`). The suite runs on the sync queue, so a dispatched revalidation would make a real HTTP request to a frontend that is not running, on every test that creates a version.
+- **The catalogue cache serves pagination links built from the request that filled the entry.** Only relevant if the API were reached on more than one host name, which it is not.
+- **The catalogue listing invalidates wholesale on any product change.** It aggregates a lowest price and a seller count across products, so working out which page went stale would cost more than rebuilding all of them. Its TTL is 300 seconds against 3600 for the rest, for the same reason.
+- **The M9 verification limiter question is still open**, unchanged by this milestone.
+- **EP-43 cannot add a new attribute to a product that already has one**, unchanged by this milestone.
+- **The seeder still creates no community posts.** Not touched this milestone; it is a seeder improvement rather than infrastructure.
+
+**Verified by.**
+- **34 new tests** across `tests/Feature/Api/RevalidationTest.php` (9), `CatalogueCacheTest.php` (11), and `MaintenanceTest.php` (14)
+- The build plan's stated M12 list, item by item:
+  - **The webhook rejecting a wrong secret.** The client answers 401 and the job treats it as a failure worth retrying rather than swallowing it, because the usual cause is the two sides holding different secrets mid deployment. A missing secret is treated differently and deliberately: logged once and given up on, because retrying a deployment fault five times produces five identical failures and buries the cause
+  - **Revalidation firing on version creation only and never on a rejected proposal.** Asserted in both directions: a version dispatches with the right slug, and a low confidence proposal voted down by its peers resolves to `rejected`, writes zero versions, and dispatches nothing
+  - **A slow frontend not failing the request that created the version.** The queue is switched to the database driver for that one test, because the suite runs on `sync` where every dispatch executes inside the caller, and asserting against `sync` would prove the opposite of what the test is for. With the client faked as a connection failure, the version exists, the product points at it, **nothing was sent**, and the work is sitting on the `revalidation` queue. A second test then fails the job outright and confirms the version is untouched afterwards
+- The cache asserted by writing and re-reading rather than by inspecting keys: a new version, a new seller, a price edit through `updated` rather than `created`, a detach, a catalogue listing price, a new category, a store going dark, and a soft deleted store disappearing from **every** product page it appeared on
+- One test asserts a cache **hit**, so the invalidation tests cannot pass by accident. With caching switched off, that is the only one that fails
+- One test runs the whole public catalogue with `catalogue.cache.enabled` false, so the layer is removable rather than load bearing
+- Two tests guard the queue configuration against silent drift: every queued job lands on a queue some supervisor actually watches, and the sweep never shares a supervisor with revalidation. A job dispatched to an unwatched queue is never processed and nothing raises anything
+- Run by hand against the development database: `stores:reconcile-live` reported every flag already matching, and `maintenance:health` exited 0 with nothing overdue
+- `composer test` green: Pint passed, PHPStan level 7 with **0 errors**, **484 tests with 479 passed and 5 todo**, up from 450
+
+---
+
+### M12 Caching and hardening, frontend, 2026-08-28
+
+**Shipped.**
+- EP-51 verified end to end against the running backend, from an administrator edit through to the rebuilt page
+- `components/product/StructuredData.tsx`, holding both public JSON-LD blocks, with the store schema new
+- `app/robots.ts`, the site wide indexing rules from section 6.2
+- `lib/site.ts` and `metadataBase`, so the canonical URLs the pages have emitted since M2 resolve to something real
+- Indexing audited across every route, and the one gap closed
+- The M10 `revalidate` mismatch settled
+- An accessibility pass on the public group: a skip link, a visible focus ring, and a keyboard usable variant selector
+
+**Contract.**
+- Contract version at time of writing: **9**
+- Changes made to api-contract.md: none from this side. Version 9 was the backend correcting EP-51's path to `/api/revalidate`, which is where this client has hosted the handler since M0. **No client change was needed.** The contract moved to match what was already built
+- Error codes handled on screen: none new
+
+**EP-51, walked end to end rather than asserted.**
+
+The route handler needed no change. What it needed was proof, and this is the sequence that was run with both servers up and a queue worker to hand.
+
+1. The webhook answers **401** with no header and **401** with a wrong one, **422** for a body carrying no slug, and **200** with `{"revalidated":true,"slug":…}` for a correct secret. The 500 `misconfigured` path is reachable only by unsetting the secret on this side, which is a deployment fault rather than a caller one, and is why it is not a 401
+2. The page was warmed so it held a known specification, then an administrator edit through EP-43 changed the weight to 1.21 kg and answered `current_version_number: 3`
+3. **The page still served 1.28 kg**, and exactly one job was sitting on the `revalidation` queue. This is the important step: the request that created the version had already finished, and nothing had spoken to this application yet
+4. The worker ran the job in 98 ms, and the page then served **1.21 kg**, with `/products/{slug}/sellers` rebuilt alongside it
+5. An escalated proposal was then **rejected** through EP-41. It answered `version_number: null`, the version count stayed at three, and **zero** revalidation jobs were queued. The only jobs in the table were on `default`
+
+Step 5 is the one the build plan asks for and step 3 is the one worth keeping. Together they say the webhook fires on a version, never on a rejection, and never inside the request that caused it.
+
+**Deviations from the plan.**
+- **`/products/[slug]/sellers` is `noindex, follow` with its canonical pointing at the product page.** Section 6.2 names three indexable routes and this is not one of them, which is the right call rather than an oversight: it shows the same seller list the product page already carries, and two indexable URLs describing one product compete with each other. The one that should win is the static, revalidated page rather than a `force-dynamic` route a crawler cannot cache. `follow` stays on, because the point is to stop it ranking, not to hide the store links that lead to pages which are indexable.
+- **`/` and `/products` stay indexed** although section 6.2 does not name them. That section lists the indexable *product family* and then names its exceptions; section 4 describes the whole public group as "anonymous, indexable". A home page and a catalogue browse that no crawler may index would leave the site with no entry point at all, which is not a reading anybody intended.
+- **`robots.txt` was added, and page level `robots` metadata kept.** They do different jobs. A `noindex` tag is read *after* the page is fetched, so it stops a page ranking but not the request; a disallow stops the request. The authenticated routes redirect anonymously, so a crawler wandering into `/dashboard` learns nothing and costs a redirect anyway.
+- **`/search` is deliberately not disallowed in `robots.txt`.** It carries `index: false, follow: true`, meaning "do not rank this, but do walk the product links on it". Disallowing it would stop the crawler reading the page and therefore stop it following those links. **A rule that blocks a crawl is not a stronger version of a rule that blocks an index**, and treating it as one is how sites accidentally hide their own catalogue.
+- **The disallow list is derived from `PROTECTED_PREFIXES`**, which `proxy.ts` now exports. Two hand written lists would drift the first time a route was added, and the failure would be silent in both directions.
+- **Each prefix is emitted as `/x$` and `/x/` rather than as `/x`.** This was a bug found by reading the generated file rather than by writing it. A robots.txt rule matches by prefix and nothing else, so a bare `Disallow: /store` also blocks **`/stores/1`**, which section 6.2 requires to be indexed. It would have hidden every store page on the platform from search, and the only symptom would have been traffic that never arrived. The anchored pair reproduces exactly the "exact match or followed by a slash" rule the proxy applies.
+- **`metadataBase` was missing and is the reason canonical URLs were being published wrong.** The pages have emitted `alternates.canonical` and Open Graph images as paths since M2, and Next resolves those against `metadataBase`, which was unset and so defaulted to localhost. A deployed page would have published a canonical URL pointing at the machine that built it, which is worse than emitting none: the one tag whose whole job is to say where a page really lives would have said somewhere unreachable.
+- **JSON-LD `@id` is absolute, everything else in metadata stays relative.** Next resolves metadata paths against `metadataBase` for us, but JSON-LD is a string written by hand, and a schema.org `@id` is an identifier rather than a link. A relative one identifies a different thing on every host that serves the page.
+- **Structured data emits nothing the page does not also show.** No invented rating, no availability claimed for a product nobody stocks, no field padded to look complete. A store with no rating gets no rating block rather than a zero, which would read as a bad review instead of an absence of reviews. Availability on the product is read off the listings, so a product every seller has marked unavailable says out of stock.
+- **The M10 `revalidate` mismatch was settled by raising the fetch to meet the page, not the other way round.** Next takes the **shortest** revalidate across every fetch in a route, so the seller list's 30 seconds was silently dragging S-04 from its declared 300 down to 30, and the most important static page in the system was being rebuilt ten times more often than anybody had asked for. Product content is invalidated by EP-51 the moment a version exists, so the timer is only a backstop for prices, and a price at most five minutes old in the *server rendered fallback* is acceptable when anybody with JavaScript sees the live list within a second. **The build output now reads `5m` against `/products/[slug]`, where it used to read `30s`.**
+- **S-05 states `revalidate: 0` explicitly.** `force-dynamic` governs how a route renders, not whether an individual fetch is cached, so without it that screen would have kept serving a five minute old price. A preview on S-04 may be slightly stale; the screen whose entire purpose is live prices may not.
+- **The variant selector now handles arrow keys, and this was an accessibility bug rather than a missing nicety.** The group has announced itself as a `radiogroup` with `radio` children since M2, which is the right description. But that role is a promise: a screen reader says "radio button, 3 of 6" and the convention is that arrows move within the group while Tab leaves it. Announcing the role without implementing the keys is worse than plain buttons would have been, because it describes behaviour the component does not have. It now has a roving tabindex, arrow keys that wrap, and Home and End.
+- **A skip link and a global `:focus-visible` ring were added.** `Button` and `Input` defined their own focus styles, so the components built as components were covered. What was not covered is every plain link, and the public pages are largely made of those.
+- **No `aria-current` was added to the main navigation.** It would mean converting a deliberately server rendered component to a client one to read the pathname, and the note on `Navigation` explains why it is server rendered. The catalogue's category chips already carry `aria-current`, which is where it earns more.
+- **No sitemap was built.** A complete one needs to enumerate every product and every live store, and there is still no endpoint listing live stores, which is the open request from M2. A sitemap covering the first hundred products and no stores would be a worse signal than none, because it tells a crawler that is all there is.
+
+**A shape bug the production build caught, and the backend fix it forced.**
+
+The first build of this milestone **failed**, on `GET /api/products/{slug}/variants returned an unexpected shape at "0.attribute_values": expected record, received array`.
+
+The cause was in the backend's new catalogue cache, not here. It stored `->getData(true)`, which decodes a response into an associative array and turns every empty `stdClass` into an empty array, so a product with no attributes came back with `attribute_values: []` instead of `{}`. Every resource in that application casts those maps to `object` on purpose. The uncached response was right and the cached one was wrong, which is the worst shape a caching bug can take: it passes every test that reads an endpoint once.
+
+Two things are worth recording. **The zod schemas caught it and nothing else would have** — this is the first time the boundary parsing described at M0 as insurance has actually paid. And it was caught by a *production build*, because prerendering reads every product, including the two seeded ones with no attributes at all. The backend now caches the finished response bytes, and has a test asserting a cached and an uncached response are byte identical across the whole public catalogue.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking. This is the last milestone.**
+- **`NEXT_PUBLIC_SITE_URL` must be set in any real deployment.** It defaults to `http://localhost:3000`, which is right for development and wrong everywhere else, and a wrong value publishes wrong canonical URLs and a wrong `robots.txt` host.
+- **S-07 is still server rendered on demand rather than prerendered**, because no endpoint lists live stores. Unchanged since M2 and still low priority: it affects build time prerendering, not correctness.
+- **The root stylesheet sets `font-family: Arial, Helvetica, sans-serif` on `body`**, which overrides the Geist variables the layout puts on `<html>`. Both fonts are therefore downloaded and unused. Noticed during this milestone and deliberately not changed, because it alters how every page looks and that is a design decision rather than a hardening one.
+
+**Verified by.**
+- `npm run docs:check`, `npm run lint`, `npx tsc --noEmit`, and `npm run build` all clean, the build run from a **cleared** `.next` each time
+- **Build plan section 7, the checks it names before M12 may be called done:**
+  - **A production build from a cleared `.next`.** 37 pages generated, five product paths marked SSG
+  - **View source on a product page, with no JavaScript running.** The name is in the `h1`, the description is in the body and in the meta tag, all three specifications render as a definition list, and **all six variant combinations are in the HTML**, one of them labelled "No sellers yet". Five seller contact emails are in the static markup, which is the disclosure the platform exists for
+  - **Revalidation fires only on version creation.** Walked live, in five steps, above
+  - **No confidence score, verification photograph path, or product creator field.** Every public page fetched and searched for `confidence_score`, `confidence_band`, `created_by`, `created_by_store_id`, `creator`, `verification_photo`, `photograph`, and `storage_path`. The only hit anywhere was the word "photographing" in the sentence explaining that owners proved ownership, which is copy rather than a leak
+- Indexing checked by fetching each public route and reading the tags it actually served: `/`, `/products`, `/products/[slug]`, `/products/[slug]/community`, and `/stores/[id]` indexed; `/products/[slug]/sellers` and `/search` `noindex, follow`; every authenticated route `noindex, nofollow`
+- `robots.txt` read as generated, and checked specifically against `/stores/1`, which the first version of it would have blocked
+- Accessibility checked in the rendered HTML rather than in the source: the skip link is the first focusable element and targets a `<main id="main">`, `html lang="en"` is set, both `nav` landmarks are labelled, the radiogroup is labelled by its heading, exactly one radio is `tabindex="0"` and the rest are `-1`, and the `:focus-visible` rule ships in the stylesheet
+
+**Outstanding browser checks, and what became of them.**
+
+Seven were carried into this milestone. Five are settled and two still need a person at a keyboard.
+
+- **1, 2, 3, the view recording calls.** Settled without a browser, at the level the questions were actually about. EP-52 answers **201** with `{"recorded":true,"store_id":null}` for a bare `{}` body and `store_id: 1` when arriving through a store. The request `ViewRecorder` sends carries `credentials: 'omit'` and only `Accept` and `Content-Type`, so there is **no cookie and no Authorization header by construction**, and its ref guard is keyed by slug, so a re-render records nothing and a client navigation to a different product records once
+- **7, the administrator remove on a seeded thread.** **Closed.** The seeder gap it was waiting on is gone, see below. Removing the seeded top level post answered `replies_hidden: 1`, the public thread went to zero posts with no tombstone, and both rows survived as one visible against two with trashed
+- **6, S-36 "let it stand".** The code is right: `standingDecision` maps the status vocabulary onto the decision vocabulary and the reversal warning keys off it, so the dialog cannot show a reversal warning to somebody who asked to leave the decision alone. **Still wants one look in a browser**, because that is exactly what the original bug was: something true in the types and wrong on the screen
+- **4, the analytics presets and the back button**, and **5, two tabs on `/versions/{slug}` with a detach between them.** **Neither was performed.** Both are about browser behaviour that has no HTTP level equivalent: whether the back button moves between date ranges, and what a second tab shows after the first one detaches. They need a person with two tabs open
+
+**An open request closed on the way past.**
+
+The seeder now creates a verified owner and a two post discussion on the phone, which closes the request raised at frontend M11. S-06 shipped at M9 and its administrator remove at M11, and neither had any seeded data to render against: every demonstration needed a thread made by hand, at the cost of a photograph upload and an AI call per product.
+
+The verification is written as the state a real one **leaves behind** rather than faked: a passed attempt with `photo_deleted_at` already set, because invariant 7 says a photograph does not outlive its verification and a seeded attempt still holding one would be a state the platform never allows to exist. The buyer is `test@example.com`, the account already seeded for signing in, so the composer's verified state is reachable by logging in rather than by working out which buyer is the verified one.
+
+**M0 to M12 are complete.**
+
+---
+
 ## 4. Open requests
 
 Things one side needs from the other that are not yet built. Remove a row only when it has shipped and been recorded in section 3.
@@ -1525,7 +1697,7 @@ Things one side needs from the other that are not yet built. Remove a row only w
 | Raised by | Date | Need | Status |
 |---|---|---|---|
 | Backend | 2026-08-26 | A Meilisearch server must be installed and running before M3 search work | **Closed 2026-08-26.** M3 shipped against it: the seeded catalogue is indexed and both search endpoints answer from it |
-| Backend | 2026-08-26 | Redis must be available before queued AI work needs Horizon's visibility, or the queue driver decision revisited | Open, and now less theoretical. M5 added three queued jobs, two of which a seller is actively waiting on. The database driver still works |
+| Backend | 2026-08-26 | Redis must be available before queued AI work needs Horizon's visibility, or the queue driver decision revisited | **Partly closed 2026-08-28.** M12 settled the decision: everything the platform actually does works on the database driver, including EP-51, catalogue caching, reconciliation, and the health check, and the M12 entry carries the full table of what does and does not. Horizon is installed and configured, and **cannot run on this machine at all**, because it needs `ext-pcntl` and `ext-posix`, which Windows does not have, as well as a Redis server that is not installed. The remaining gap is a host, not code |
 | Frontend | 2026-08-26 | No endpoint lists live stores, so S-07 cannot be prerendered at build time through `generateStaticParams`. It renders on demand and caches for 300 seconds instead | Open, low priority. Only affects build time prerendering, not correctness |
 | Backend | 2026-08-27 | The confidential endpoint specification writes EP-22's outcome with `attachments` and `proposal` objects, while section 11.4 of the contract writes it with `attachment_ids`, `proposal_id`, and `review_closes_at`. The contract is what the client mirrors, so the contract was implemented. Worth deciding whether 11.4 should carry `review_opens_at` and the attachment prices as well, once S-24 is built and it is clear what the screen actually needs | Open. Not blocking: the current shape is sufficient to render both outcomes |
 | Backend | 2026-08-27 | EP-19 is not paginated. A store's listings are bounded in practice, but a seller carrying hundreds of products would return one large payload | Open, low priority. Revisit if it becomes a real shape rather than a hypothetical one |
@@ -1539,6 +1711,8 @@ Things one side needs from the other that are not yet built. Remove a row only w
 
 | Backend | 2026-08-28 | **EP-43 cannot add a new attribute to a product that already defines one.** Options can be added to an existing attribute, but naming a new one is refused, because every combination generated under the old attribute set would be left without a value for it and invariant 2 means those could never be cleaned up. Needs a design decision about what happens to those combinations, not a relaxed validation rule | Open. Not blocking: the milestone's stated requirement is adding an option, which works |
 
-| Frontend | 2026-08-28 | **The seeder creates no community posts.** S-06 and its new administrator remove have no seeded thread to render against, and neither do the four composer states M9 built. Verifying ownership by hand costs a photograph upload per product, so a seeded verified buyer with a short thread on one product would make both milestones demonstrable | Open. Not blocking: the control is built and was proven against a hand made thread |
+| Frontend | 2026-08-28 | **The seeder creates no community posts.** S-06 and its new administrator remove have no seeded thread to render against, and neither do the four composer states M9 built. Verifying ownership by hand costs a photograph upload per product, so a seeded verified buyer with a short thread on one product would make both milestones demonstrable | **Closed 2026-08-28.** The seeder creates a verified owner on `vertex-one-smartphone` and a two post thread with one reply. The verification is written as the state a real one leaves behind, a passed attempt with `photo_deleted_at` set, rather than a photograph the platform would never let outlive its verification. The administrator remove was demonstrated on it: `replies_hidden: 1`, the thread empty, both rows surviving as soft deletes |
+
+| Backend | 2026-08-28 | **The contract listed EP-51 at `/api/internal/revalidate`, which nothing has ever served.** The frontend build plan specifies `app/api/revalidate/route.ts`, the client has hosted the handler there since M0, and M0's own verification calls `/api/revalidate` | **Closed 2026-08-28.** Contract version 9 corrects the path to `/api/revalidate` and writes out the request, response, and refusal shapes. No client change was needed; the contract moved to match what was built |
 
 Use this table rather than guessing. A frontend screen that needs a field the contract does not define adds a row here. It does not invent a field name and hope.

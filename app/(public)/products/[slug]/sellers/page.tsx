@@ -21,7 +21,25 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 
   return {
     title: product ? `Sellers of ${product.name}` : 'Sellers',
-    alternates: { canonical: `/products/${slug}/sellers` },
+    /*
+     * Canonical points at the product page, not at this URL.
+     *
+     * This screen shows the same seller list the product page already carries, in more
+     * detail. Two indexable URLs describing one product compete with each other, and
+     * the one that should win is the static, revalidated page rather than a
+     * force-dynamic route that a crawler cannot cache.
+     */
+    alternates: { canonical: `/products/${slug}` },
+    /*
+     * Not indexed, per section 6.2, which names `/products/[slug]`,
+     * `/products/[slug]/community`, and `/stores/[id]` as the indexable product family
+     * and does not include this one.
+     *
+     * `follow` stays true. The point of not indexing a duplicate is to stop it ranking,
+     * not to hide the seller and store links on it, which are how a crawler reaches
+     * store pages that are indexable.
+     */
+    robots: { index: false, follow: true },
   };
 }
 
@@ -36,7 +54,17 @@ export default async function SellersPage({ params }: Params) {
    * anonymous visitor gets seller contact details in the server rendered HTML. That is
    * the point of this screen, and it should not depend on JavaScript running.
    */
-  const [variants, initialSellers] = await Promise.all([getVariants(slug), getSellers(slug)]);
+  const [variants, initialSellers] = await Promise.all([
+    getVariants(slug),
+    /*
+     * Uncached, stated rather than inherited. `force-dynamic` governs how the route is
+     * rendered, not whether an individual fetch is cached, so without this the shared
+     * list would still be served from the data cache and this screen would show a price
+     * up to five minutes old. That is acceptable on S-04, where the list is a preview.
+     * It is not acceptable here, where the list is the screen.
+     */
+    getSellers(slug, { revalidate: 0 }),
+  ]);
 
   return (
     <div className="flex flex-col gap-6">

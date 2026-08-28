@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getCategories, getProducts } from '@/lib/api/catalogue';
 import { ProductCard } from '@/components/product/ProductCard';
@@ -14,6 +15,18 @@ import { Card, EmptyState } from '@/components/ui';
  * served to anonymous and search engine traffic without resolving a session.
  */
 export const revalidate = 3600;
+
+/*
+ * A self referencing canonical, added at M12.
+ *
+ * The home page is reachable with any number of tracking parameters appended, and each
+ * of those is a distinct URL to a crawler. This says that all of them are the same page,
+ * so the ranking they earn accrues to one address rather than being split across
+ * however many campaign links happen to exist.
+ */
+export const metadata: Metadata = {
+  alternates: { canonical: '/' },
+};
 
 export default async function HomePage() {
   // Both are independent, so they run concurrently rather than in series.

@@ -5,7 +5,9 @@ import { notFound } from 'next/navigation';
 import { getProduct, getProducts, getSellers, getSummary, getVariants } from '@/lib/api/catalogue';
 import { ProductImage } from '@/components/product/ProductImage';
 import { ProductInteractive } from '@/components/product/ProductInteractive';
+import { ProductStructuredData } from '@/components/product/StructuredData';
 import { ViewRecorder } from '@/components/product/ViewRecorder';
+import { absoluteUrl } from '@/lib/site';
 import { Card } from '@/components/ui';
 
 /**
@@ -51,9 +53,23 @@ export default async function ProductPage({ params }: Params) {
   const [variants, summary, sellers] = await Promise.all([
     getVariants(slug),
     getSummary(slug),
-    // The initial list, so the page is useful before JavaScript runs and to a crawler.
-    // Unsorted by distance, because the server does not know where the visitor is.
-    getSellers(slug),
+    /*
+     * The initial list, so the page is useful before JavaScript runs and to a crawler.
+     * Unsorted by distance, because the server does not know where the visitor is.
+     *
+     * The window is stated rather than left to the default, and this is the M10 mismatch
+     * being settled. Next takes the **shortest** revalidate across every fetch in a
+     * route, so the shared seller list's own 30 seconds was silently dragging this whole
+     * page from 300 seconds down to 30, and a page being rebuilt ten times more often
+     * than it was declared to be is not a static page in any useful sense.
+     *
+     * Matching the page is the right way round rather than raising the page to meet the
+     * fetch, because product content is invalidated by EP-51 the moment a version is
+     * created, so the timer is only a backstop for prices. A price at most five minutes
+     * old in the server rendered fallback is acceptable: anybody with JavaScript sees
+     * the live list within a second of arriving, and S-05 never caches at all.
+     */
+    getSellers(slug, { revalidate: 300 }),
   ]);
 
   const primary = product.images[0] ?? null;
@@ -154,7 +170,7 @@ export default async function ProductPage({ params }: Params) {
 
       <ProductInteractive product={product} variants={variants} initialSellers={sellers.data} />
 
-      <StructuredData product={product} sellers={sellers.data} />
+      <ProductStructuredData product={product} sellers={sellers.data} url={absoluteUrl(`/products/${product.slug}`)} />
 
       {/*
         EP-52. Renders nothing and is wrapped in Suspense because it reads the query
@@ -165,44 +181,6 @@ export default async function ProductPage({ params }: Params) {
         <ViewRecorder slug={product.slug} />
       </Suspense>
     </article>
-  );
-}
-
-/**
- * Product schema for search engines.
- *
- * The offers block is omitted where no seller is attached. Such products stay visible,
- * and emitting an empty aggregate would misrepresent availability to a crawler.
- */
-function StructuredData({
-  product,
-  sellers,
-}: {
-  product: Awaited<ReturnType<typeof getProduct>> & object;
-  sellers: Awaited<ReturnType<typeof getSellers>>['data'];
-}) {
-  const prices = sellers.map((listing) => listing.price_minor);
-
-  const schema = {
-    '@context': 'https://schema.org',
-    '@type': 'Product',
-    name: product.name,
-    description: product.description ?? undefined,
-    image: product.images.map((image) => image.url),
-    offers:
-      prices.length > 0
-        ? {
-            '@type': 'AggregateOffer',
-            offerCount: sellers.length,
-            lowPrice: Math.min(...prices) / 100,
-            highPrice: Math.max(...prices) / 100,
-            priceCurrency: sellers[0]?.currency,
-          }
-        : undefined,
-  };
-
-  return (
-    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }} />
   );
 }
 

@@ -3,6 +3,8 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { getStore } from '@/lib/api/catalogue';
 import { formatMoney } from '@/lib/format/money';
+import { StoreStructuredData } from '@/components/product/StructuredData';
+import { absoluteUrl } from '@/lib/site';
 import { Card, EmptyState } from '@/components/ui';
 
 /**
@@ -134,6 +136,13 @@ export default async function StorePage({ params }: Params) {
           </ul>
         )}
       </section>
+
+      {/*
+        S-07 is one of the three indexable product family routes, and a store is a place
+        with an address and a telephone number, which is exactly what local search
+        results are built from. The rating is emitted only where one exists.
+      */}
+      <StoreStructuredData store={store} url={absoluteUrl(`/stores/${store.id}`)} />
     </div>
   );
 }
