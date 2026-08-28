@@ -180,6 +180,17 @@ export function ListingsPanel() {
                       ? '1 version listed'
                       : `${listing.variants.length} versions listed`}
                   </p>
+                  {/*
+                    M10. The way into S-31, and it is here rather than on the product
+                    page because carrying the product is what opens the history. A
+                    seller who detaches loses this on their next request.
+                  */}
+                  <Link
+                    href={`/versions/${listing.product.slug}`}
+                    className="mt-0.5 inline-block text-xs text-zinc-500 underline dark:text-zinc-400"
+                  >
+                    Record history
+                  </Link>
                 </div>
               </div>
 

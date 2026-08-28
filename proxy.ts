@@ -37,6 +37,14 @@ const PROTECTED_PREFIXES = [
   '/attach',
   '/proposals',
   '/analytics',
+  /*
+   * M10. Version history, scoped to a product like the verification screens are.
+   *
+   * Deliberately not `/products/{slug}/versions`: the matcher below excludes
+   * `products` so public catalogue traffic never resolves a session, and a protected
+   * page under that prefix would silently inherit the exclusion and lose this redirect.
+   */
+  '/versions',
   // Administrator
   '/admin',
 ];

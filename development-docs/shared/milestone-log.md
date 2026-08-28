@@ -30,8 +30,8 @@ Update the two status columns as milestones complete. Everything else in this fi
 | M6 Confirmation and proposals | Done | Done |
 | M7 Peer review | Done | Done |
 | M8 Listings and wishlist | Done | Done |
-| M9 Community and verification | Done | Not started |
-| M10 Analytics and versions | Not started | Not started |
+| M9 Community and verification | Done | Done |
+| M10 Analytics and versions | Done | Done |
 | M11 Administration | Not started | Not started |
 | M12 Caching and revalidation | Not started | Not started |
 
@@ -1160,6 +1160,213 @@ No response on any path carries a path, a URL, or the file. A test reads the raw
 
 ---
 
+### M9 Community and verification, frontend, 2026-08-27
+
+**Shipped.**
+- S-06 `/products/[slug]/community`, the discussion, **server rendered and indexable**
+- S-15 `/verify/[slug]`, proving ownership, with the five attempt counter
+- X-01's fifth flow, on the verification submit
+- `components/community/PostComposer.tsx` and `PostThread.tsx`
+- `lib/api/community.ts`, `lib/schemas/community.ts`, and a rewritten `types/community.ts`
+- The product page now links to the discussion whether or not a summary exists
+
+**Contract.**
+- Contract version at time of writing: 6
+- Changes made to api-contract.md: none. This side mirrors it
+- Error codes handled on screen: `not_verified` (403), `attempts_exhausted` (403), `unsupported_media_type` (422), `file_too_large` (422), `ai_unavailable` (503)
+
+**The photograph, which is the rule this milestone turns on.**
+
+It is never displayed, at any point. Not as a preview after choosing a file, not on the outcome panel, not anywhere. The file input is cleared on submit rather than turned into a thumbnail, and the screen says outright that the photograph is deleted as soon as it has been checked.
+
+That is enforced rather than trusted. `assertNoPhotograph` reads the raw payload of **all six** endpoints as text and throws on `photo_path`, `photo_url`, `photograph`, `attempts/`, `verification-photos`, and the four image extensions. Zod ignores keys it was not told about, so without that check a backend regression would validate silently and sit in memory waiting for somebody to render it.
+
+**EP-33 is the only source of composer branching**, as the backend asked. Nothing about whether a person may post is inferred from the post list, from a flag on a post, or from anything in the browser:
+
+| State | From EP-33 | Renders |
+|---|---|---|
+| Anonymous | no session, so no call at all | Read only, sign in link |
+| Not verified | `is_verified: false`, `can_attempt: true` | Prompt linking to `/verify/{slug}` |
+| Verified | `is_verified: true` | The composer |
+| Exhausted | `is_verified: false`, `can_attempt: false` | Final, with no way out offered |
+
+`can_attempt` is treated as a rendering hint throughout. **403 `not_verified` on POST is handled anyway**, and points at the fix rather than dead ending, because the endpoint decides and the window can move between the read and the write.
+
+**Deviations from the plan.**
+- **A failed verification is rendered as an outcome, not an error.** It arrives as 200, and the panel states what was wrong and how many attempts remain in the same register as a pass. A buyer who photographed the wrong thing has not made a bad request.
+- **`pending_code` is shown on every visit.** A buyer who closed the page sees the code they already wrote down. Without it they would reasonably assume it was lost and that getting another cost them one of five, and the screen says explicitly that getting a code spends nothing.
+- **The exhausted state offers nothing.** No appeal, no reset, no support link. Those do not exist by design, and a link would send somebody looking for help that cannot arrive. It does say the ceiling is per product, which is the one useful thing left to tell them.
+- **X-01 resumes from EP-33's `pending_job_id`, not only from `localStorage`.** A buyer can have verifications queued on two products at once, and one browser key cannot tell them apart. The API's answer seeds the panel; the stored id is a convenience for the common single case.
+- **`AttachFlow` was renamed `QueuedFlow`** and gained `verification`. Verification has nothing to do with attaching, and the old name would have made this union look like the wrong home for it. Six usages, all inside `lib/jobs/`.
+- **Replies load on demand rather than with the page.** A product with a long discussion would otherwise pay for every reply on every visit, and most readers open none.
+- **A soft deleted post is simply absent.** No tombstone, no "removed by an administrator" line, no placeholder. Inventing one would advertise a moderation feature that does not exist until M11 and would leave a conversation stub with its subject missing.
+- **`types/community.ts` was rewritten rather than extended.** The M0 file guessed at `author.id`, an `active_attempt` object, and a `WishlistEntry` that M8 later defined properly elsewhere. None of those shapes are real, and it was imported nowhere.
+- **The community page is server rendered on demand rather than statically generated.** It carries no `generateStaticParams`, because a discussion changes on a timescale a build cannot anticipate. It revalidates at 30 seconds and a crawler receives the full thread in the HTML, which is what the indexing rule actually requires.
+
+**A bug this session found and fixed.**
+
+`proxy.ts` listed `/verification` among its protected prefixes, an M0 guess at a route name. The screen that shipped is `/verify/{slug}`, so **the verification screen was reachable without a token** until this was corrected. Caught by walking the anonymous case rather than by any type or test. `/verify-email` is unaffected: the prefix check matches an exact path or one followed by a slash, and `/verify-email` is neither.
+
+
+**One thing the queued walk exposed about the environment, not the code.**
+
+A long running `queue:work` bootstraps its configuration once and does not see `php artisan config:clear`. The first attempt at this walk had the worker judging jobs with the pre flip configuration while the web process used the new one, so a submission that correctly returned 503 was then completed normally a moment later. Nothing was wrong with either side. It is worth knowing before anyone tries to reproduce the queued path: **restart the worker after changing `AI_FAKE_SHOULD_FAIL`**, or stop it entirely to observe the queued state.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking on the backend.**
+- **The 5 per minute verification limiter and the five attempt ceiling interact.** Each attempt costs two requests, so a buyer working through all five in a hurry trips `rate_limited` after roughly two and a half. Both limits are correct on their own and neither is a fault, but the screen does not currently explain the pause. Worth a sentence on S-15, or a wider limiter, if it proves confusing in practice.
+- **Alerts and the summary remain invisible by design.** Email only, no notification surface anywhere, and the summary is generated in the background with nothing waiting on it.
+- **Administrator post deletion is M11.** Soft deletes are respected everywhere here, but nothing can remove a post yet, so there is no moderation affordance to build against.
+- **A queued verification is the one AI flow with no local draft to preserve.** The photograph is already with the platform, so there is nothing to retain on screen and the panel simply reports progress.
+- X-04 still links to `/analytics`, which is M10 and remains a dead link.
+- Escalated proposals remain a dead end until M11, unchanged.
+
+**Verified by.**
+- `npm run docs:check`, `npx tsc --noEmit`, `npm run lint`, and `npm run build` all clean, with `/products/[slug]` still statically generated and no Suspense or deopt warnings
+- Against the live API through the authenticated proxy:
+  - Anonymous read of EP-31 returned the cursor paginator with no token
+  - A signed in but unverified buyer was refused with **403 `not_verified`**, and EP-33 reported `can_attempt: true` with five remaining
+  - Starting twice returned the **same code**, and `attempts_used` stayed at **0**, so starting spends nothing
+  - A photograph without the code returned **200 `failed`** with the reason and four remaining
+  - A photograph carrying the code returned **200 `passed`**, after which the post was created and appeared in the public thread
+  - The same buyer posting on a second product was refused **403 `not_verified`**, so verification of one grants nothing on another
+  - Five failed attempts on that second product drove `attempts_remaining` to **0** and `can_attempt` to false, after which starting again was refused
+  - **The queued path, walked with `AI_FAKE_SHOULD_FAIL=true` and no worker running:** submit answered **503 `ai_unavailable`** with `queued_job_id` at the top level per section 8; EP-33 then reported **`pending_job_id` identical to it** with `latest_outcome: pending`, the attempt **not yet spent**, `pending_code` still shown, and the photograph retained on the private disk; EP-50 answered `status: queued` with **`result_type: null`**, as section 8 requires until a job completes. With the provider restored and the worker run, EP-50 answered `status: completed`, `result_type: verification_result` carrying the outcome and reason, EP-33 **cleared `pending_job_id`** and recorded the attempt, and the photograph was **gone from disk**
+  - No `photo_path`, `photo_url`, `attempts/`, or `verification-photos` in any payload, in the job result the panel reads, or in the rendered HTML
+- `/products/{slug}/community` renders **200 with no token** and its posts are present in the server rendered HTML, so a crawler sees the discussion; `/verify/{slug}` redirects **307 to `/login?next=…`** anonymously
+
+---
+
+### M10 Analytics and version history, backend, 2026-08-28
+
+**Shipped.**
+- EP-52 `POST /api/products/{slug}/views`, public, recording a product page view
+- EP-39 `GET /api/stores/mine/analytics`, date ranged view counts for the calling store
+- EP-46 `GET /api/products/{slug}/versions` and EP-47 `GET /api/products/{slug}/versions/{number}`
+- `ViewRecordingService`, `StoreAnalyticsQuery` with a `StoreAnalytics` value object, `VersionHistoryService` with a `VersionEntry` value object
+- `AnalyticsController`, `ProductViewController`, `ProductVersionController`, and the resources for each
+- `ProductView` model and factory, over a table that had existed unused since M0
+- Seeded version chains for every product and 740 product views across 45 days
+
+**Contract.**
+- Contract version at time of writing: **bumped from 6 to 7**
+- Changes made to api-contract.md: added **section 11.11**, the view recording request and response, the seller analytics shape, and the two version history shapes. Recorded in section 9 that EP-52 shares the public catalogue limiter
+- Error codes now live from this milestone: **none are new**. `not_attached` and `store_required` were registered in section 7 since version 1 and are reachable from the version endpoints for the first time now
+
+**No migration was needed, and that is the third time M0 paid off.**
+
+`product_views` and `product_versions` were both created at M0 with the right columns and the right indexes, including the `(store_id, viewed_at)` index that the analytics query turns out to need and the nullable `store_id` that makes an unattributed view expressible at all. The M0 migration comment even anticipates this milestone's shape: *"user_id is nullable because the catalogue is fully public, so most views carry no account at all."*
+
+**Deviations from the plan.**
+
+- **EP-46 and EP-47 are registered in the Auth group, not the Seller group.** The route file's M0 placeholder put them under Seller alongside EP-39. The contract grants them to a seller attached to the product **or an administrator**, and an administrator holds no store, so the seller middleware would have refused them with `store_required` before the request reached the controller. The real check lives in `VersionHistoryService::assertReadable()` instead.
+- **A caller with no store gets `store_required`; a caller with a store that does not carry the product gets `not_attached`.** Both are 403 and collapsing them into one code would have been simpler, but a seller then cannot tell "you need a shop" apart from "you do not stock this", and those have completely different fixes.
+- **The access check runs before the version lookup on EP-47.** A caller who may not read a history gets `not_attached` for a version number that exists and for one that does not, so the chain's length cannot be probed by watching which numbers answer 404.
+- **`changed_fields` is computed rather than stored, and is coarse.** A version holds a whole snapshot rather than a diff, so what changed is worked out by comparing against the version before. It names `specifications` rather than describing which specification moved, because a truthful field level diff of nested attribute and variant lists is a much bigger thing than a history list needs, and the full snapshot is one request away. **Version 1 reports an empty array**: it created the record, and there was no earlier state to differ from.
+- **No administrator is named on a version.** An administrator edit carries `is_admin_originated: true` and a null store. Attribution for a change applied to a shared record is what an audit trail is for, but naming the moderator who applied it serves no seller and gives a disgruntled one a target. The frontend's M0 guess at `causing_admin: { id, name }` is not what shipped.
+- **No proposal id on a version either.** EP-29 answers 404 to any store that was neither the proposer nor a frozen reviewer, which is most of the audience for this list, so the id would have been a link that mostly does not open.
+- **A `store_id` on EP-52 that names a store not carrying the product is recorded as null rather than refused.** A seller detaching between the page rendering and the view arriving is an ordinary race, and a 422 into a public page render would turn it into a visible error for a visitor who did nothing wrong. The view still happened and still counts at product level. The response echoes back what was actually attributed, so the difference is visible to a client that expected otherwise rather than being discovered in an analytics screen weeks later.
+- **EP-39 answers two counts, not one.** `store_views` is what reached this seller and `product_views` is all the interest in the same products. A single number with nothing to compare it against does not tell a seller whether forty views is good. Both totals are the sum of the `products` rows, so the breakdown and the totals cannot disagree.
+- **The daily series is zero filled server side**, covering every date in the range. A chart with holes in it is the commonest way a quiet week gets mistaken for a broken endpoint, and the server already knows exactly which days it was asked about.
+- **A product the seller has detached from stays in the breakdown**, carrying its historical views and flagged `is_carried: false`. Dropping it would make a seller's total shrink retrospectively every time they removed a listing.
+- **A range longer than 366 days is pulled forward rather than refused.** The seller asked for a period, and answering the most recent year of it beats a validation error about a ceiling they had no way to know. A range that ends before it starts is still a 422, because that is a mistake rather than an ambitious request.
+- **EP-46 paginates at 20 per page.** Section 2 says every list endpoint returns the length aware paginator, and version chains being short today is not a reason to ship the one list shape that would have to change later.
+
+**A column that is deliberately never written.**
+
+`product_views.user_id` is null on every row this platform creates. EP-52 is a public route, invariant 9 forbids resolving a session on one, and so there is nobody to attribute a view to even when the visitor happens to hold a token. There is a test asserting the column stays null on a request made with a valid token. The column stays for a future authenticated path rather than for this one, and **no analytics figure anywhere is per user**.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking. S-30 and S-31 are both unblocked, and S-04 has one call to add.**
+- **S-04 should POST to EP-52 once per product page render**, passing `store_id` only when the visitor arrived through that store's context, meaning from S-07 or from a seller list entry. **Omit the field entirely otherwise.** Sending a store id that the visitor did not actually arrive through would attribute a view to a seller who did not earn it, and the endpoint cannot tell the difference.
+- **EP-52 answers 201, not 204**, and its body carries the store the view was actually attributed to. A null there after sending a store id is not an error and should not be surfaced to the visitor.
+- **`changed_fields` names parts of the record, not fields of the product.** Expect `specifications`, `attributes`, `variants`, `name`, `slug`, `description`, and `category`, and expect an empty array on version 1.
+- **The 403 on the version endpoints has two codes and they want different copy.** `store_required` means the reader has no shop; `not_attached` means they have one but do not carry this product. The plan calls out the second as the explanation S-31 has to render when a seller detaches mid session, and it is a real 403 rather than a rendering hint: there is no flag to read in advance.
+- **There is no rollback control and none is planned.** History is read only. An administrator wanting an old value edits forward through EP-43 at M11, which writes a further version.
+- **Analytics days are UTC days.** A seller in Colombo will see an evening's traffic land on the following day's bar. That is a real cost of a single fixed reckoning and is worth a line on S-30 rather than a client side correction, which would make the daily series and the totals disagree.
+- **Seeded analytics are deterministic**, with a weekend dip and a slow decline going back in time, so the date range control visibly does something. Northern Supplies receives no attributed views at all, so the state where a seller has listings and real interest in what they stock but nothing attributed to them is reachable on screen. Lumen Desk Lamp and Orbit Wireless Earbuds have views but no sellers, so every one of theirs is unattributed.
+- **`X-04` can stop treating `/analytics` as a dead link.**
+- Escalated proposals remain a dead end until M11, unchanged by this milestone.
+
+**Verified by.**
+- 21 tests in `tests/Feature/Api/AnalyticsTest.php` and 20 in `tests/Feature/Api/VersionHistoryTest.php`
+- The build plan's stated M10 list, item by item: version history refused with `not_attached` for a seller who holds a store and carries two other products but not this one, access re-read per request so a detach between two calls on **the same token** turns 200 into 403, a rejected proposal absent from the chain, anonymous access refused with 401 on both version endpoints, and view counts attributed to the right store with two sellers reading the same product level rows and each seeing only their own
+- The rejected proposal case driven through `ProposalResolutionService` with two real reject votes rather than asserted against the code that writes versions, then read back through EP-46: still one version, no row carrying that proposal id, and the product's specification untouched
+- Walked against the live API on seeded data: EP-52 recording anonymously with `X-Access-Level: public` and no `Set-Cookie`, attributing to two different carrying stores, and dropping a store that does not carry the product; EP-39 read by two sellers over the same rows returning 1 view each out of 3; EP-46 returning the three step chain with the administrator edit carrying a null store and version 1 carrying an empty `changed_fields`; EP-47 returning the earlier battery figure from version 1 and the current one from version 3; the administrator reading a history with no store of their own, including on a product nobody sells; and the detach walk above
+- `composer test` green: Pint passed, PHPStan level 7 with **0 errors**, 413 tests with 407 passed and 5 todo
+
+---
+
+### M10 Analytics and versions, frontend, 2026-08-28
+
+**Shipped.**
+- S-30 `/analytics`, date ranged view counts with the daily chart and the per product breakdown
+- S-31 `/versions/[slug]` and `/versions/[slug]/[number]`, the version chain and one snapshot
+- The EP-52 view recording call added to S-04, and the store context links on S-07 that feed it
+- `components/product/ViewRecorder.tsx`, `components/product/VersionAccessNotice.tsx`, `components/seller/ViewsChart.tsx`
+- `lib/api/analytics.ts`, `lib/api/versions.ts`, `lib/schemas/analytics.ts`, `lib/schemas/version.ts`, `types/analytics.ts`
+- UTC day helpers in `lib/format/dates.ts`, and a rewritten version section in `types/product.ts`
+- `/versions` added to the proxy's protected prefixes; "Record history" links added to S-21 and to the analytics table
+
+**Contract.**
+- Contract version at time of writing: 7
+- Changes made to api-contract.md: none. This side mirrors it
+- Error codes handled on screen: `not_attached` (403) and `store_required` (403). Both were registered since version 1 and are reached by these screens for the first time
+
+**X-04's `/analytics` link needed no change and never did.**
+
+The entry has been in `AccountNav` since M0, pointing at a route that did not exist. Building the route is the whole of "wiring it up". Worth recording because the obvious reading of the task was to add a link, and adding a second one would have produced a duplicate.
+
+**Version history is not under `/products/`, and that is load bearing.**
+
+The proxy matcher deliberately excludes `products`, `search`, and `stores` so public catalogue traffic never resolves a session. A protected page at `/products/{slug}/versions` would have inherited that exclusion and silently lost its login redirect, and it would also have meant two route groups owning the same `products/[slug]` subtree. S-31 lives at `/versions/{slug}` instead, with `/versions` added to `PROTECTED_PREFIXES`. Neutral between the two audiences the endpoint serves: an administrator has no listings, so anything under `/listings/` would have been wrong for them.
+
+**Deviations from the plan.**
+- **EP-52 goes straight to Laravel, not through `/api/proxy`.** The proxy attaches the Bearer token from the httpOnly cookie, and sending one to a public route is what invariant 7 rules out. The call uses `credentials: 'omit'` cross origin, so no cookie and no Authorization header reach it. There is precedent: `SellerListPanel` already fetches the public seller list the same way. Confirmed the backend answers the preflight with `Access-Control-Allow-Methods: POST`.
+- **The recorder is a client effect, not a server call.** S-04 is statically generated and served from the cache, so a view recorded during the render would count builds rather than people, and reading anything request scoped there would deopt the route out of static generation. It is wrapped in `<Suspense>` because it reads the query string, which is the same pattern `proposals/page.tsx` uses, and a clean rebuild confirms the route is still `●` SSG afterwards.
+- **A ref guard makes it fire once per render.** React invokes effects twice under StrictMode in development, and without the guard every development view would be counted twice. Keyed by slug, so a client side navigation to another product records again while a re-render of the same one does not.
+- **Every EP-52 failure is silent.** No retry, no error boundary, no visible state. A visitor came to read about a product and nothing they came for depends on this call. `store_id: null` coming back after sending an id is likewise not surfaced: the seller detached between the page rendering and the view arriving, which is an ordinary race rather than anything the visitor did.
+- **Only S-07 sends a store context.** It is the one place in this application where a visitor arrives at a product *through* a store. The seller list on S-04 links to `/stores/{id}`, so nobody arrives at the product from it, and attributing a view to a seller because their row happened to render would push every seller's numbers wrong in the same direction. No other product link anywhere carries the parameter.
+- **The daily chart is inline SVG rather than a charting library.** Thirty bars and two rectangles each does not justify a dependency, and this way it inherits the page's own colours in both themes. No dependency was added for this milestone.
+- **The two bars are overlaid, not side by side.** `store_views` is a subset of `product_views`, and drawing them as neighbours would invite a seller to add them together.
+- **The UTC day reckoning is stated on screen rather than corrected.** Shifting labels to local time would make the daily bars disagree with the totals the API computed, and a seller comparing the two would be right to trust neither. The screen says an evening's traffic may land on the next day's bar.
+- **`store_required` and `not_attached` get completely different copy** even though both are 403. One means "you have no shop", the other "you have one but do not stock this", and they have nothing in common except the status code.
+- **Neither refusal is styled as an error.** Nothing failed. The answer was no. Both are rendered as a notice or an empty state, and both are `retry: false` on the query, because retrying a decision three times only delays the explanation.
+- **`types/product.ts` was rewritten rather than extended**, exactly as the backend's entry warned. The M0 file guessed `causing_store` and `causing_admin`; the real shape is `caused_by_store` with `is_admin_originated`, no administrator named and no proposal id. It was imported nowhere, which is the second time an M0 speculative type has turned out to be wrong in every field.
+- **`assertNoVersionLeak` refuses `caused_by_user`, `causing_admin`, and `proposal_id`.** None is forbidden by section 6, but all three were left out of 11.11 on purpose, and zod ignores keys it was not told about, so a backend regression that started emitting one would validate silently and sit in memory waiting for somebody to render it.
+- **No rollback control anywhere on S-31**, per section 2.3, and not a disabled one either. A greyed out button would imply the capability exists and is merely unavailable to this reader. The snapshot page says outright that a correction goes forward as a new version.
+- **Version 1 renders "the first version, where the record began" rather than "changed nothing".** `changed_fields` is empty there because it created the record, and saying it changed nothing would be the wrong reading of an empty array.
+- **The analytics zero state and the empty state are separate.** "Nobody looked in this period" and "you are not carrying anything" both produce zeros, and they need different things done about them.
+
+**A stale build cache, which is worth knowing before anyone else sees it.**
+
+The first production build listed two prerendered product pages for slugs that are not in the database. `generateStaticParams` had been served an old catalogue out of `.next/cache`, which also explains a revalidate window that did not match the page. Deleting `.next` and rebuilding produced the correct five. Nothing was wrong with the code, but **a build output is only trustworthy from a clean `.next`**, and the phantom pages would have been read as a routing bug by anyone who found them first.
+
+Unrelated but noticed while checking: the product route reports a 30 second revalidate rather than the 300 the page declares, because `getSellers` fetches with `revalidate: 30` and Next takes the shortest window across a route. That is M2 behaviour and predates this milestone.
+
+**Known gaps handed to the other side.**
+- **Nothing blocking.**
+- **`user_id` is null on every view row, and the interface says so.** S-30 states plainly that nobody is identified. If an authenticated view path is ever added, that copy has to change with it.
+- **The store context is one parameter on one screen.** If a future screen lists sellers in a way that navigates to a product, it has to opt in explicitly by adding `?store={id}`, and it should only do so when the visitor genuinely arrives through that store. There is no automatic behaviour to inherit and that is deliberate.
+- **S-30 offers three range presets and no free date entry.** The endpoint accepts any `from` and `to`, so a custom range works by URL today. A date picker is worth adding if sellers ask for one; nothing is blocked without it.
+- **The analytics screen makes no claim about sales**, because the platform has none. Views are the only signal, and the copy says a view is somebody opening a product page and nothing more.
+- **Escalated proposals remain a dead end until M11**, unchanged by this milestone.
+- **Administrator screens are M11.** An administrator can read any version history through these same screens today, which is correct per the contract, but there is no administrator entry point to them: they reach one through a URL or through analytics, neither of which an administrator has. S-32 to S-37 should link version history where it helps.
+
+**Verified by.**
+- `npm run docs:check`, `npm run lint`, `npx tsc --noEmit`, and `npm run build` all clean, the build run from a **cleared** `.next`
+- `/products/[slug]` still prerendered: five paths marked SSG, `x-nextjs-prerender: 1` on the served page, no `Set-Cookie`, and the product name present in the HTML
+- The `ViewRecorder` confirmed present in the client bundle rather than assumed, by finding the view path in the emitted chunks
+- EP-52 walked with the exact request the browser sends, `Origin` set and no cookie: **201** with `X-Access-Level: public` and no `Set-Cookie`; a no context call attributed to null; a call through store 1 attributed to store 1; a call naming a store that does not carry the product attributed to **null rather than refused**; every new row carrying `user_id: null`
+- `?store=1` confirmed present on S-07's product links and on no other product link in the application
+- EP-39 through the running app's proxy with a real session cookie: 62 of 312 over 28 days, and the range control changing the totals, 19 of 90 over 7 days against 66 of 336 over 30
+- EP-46 and EP-47 through the same path: the three step chain with the administrator edit carrying a null store, version 1 carrying an empty `changed_fields`, and version 1's snapshot showing the earlier battery figure
+- **The detach walked through the running app on one unchanged cookie**: 200, detach, then **403 `not_attached`** on the next request, with a product the same store still carries answering 200 throughout
+- A signed in buyer with no store refused with **`store_required`** from both the version and the analytics endpoints
+- All three new routes redirecting **307 to `/login?next=…`** anonymously, answering 200 signed in as a seller, and `/versions/{slug}/0` answering 404 before reaching the API
+
+---
+
 ## 4. Open requests
 
 Things one side needs from the other that are not yet built. Remove a row only when it has shipped and been recorded in section 3.
@@ -1176,5 +1383,7 @@ Things one side needs from the other that are not yet built. Remove a row only w
 | Backend | 2026-08-27 | **Nothing resolves an escalated proposal.** The matrix escalates on a tie, on no votes at all, and on high confidence with peers against, and EP-41 and EP-42 that act on that are M11. A seller whose proposal escalates stays blocked with no route out | Open. Not blocking the frontend, which renders escalated as a blocked state already. Blocking for the seller it happens to |
 
 | Frontend | 2026-08-27 | **Section 11.9 does not state that a wishlist item's `currency` is nullable.** The example shows a populated pair, and the API returns `lowest_price_minor: null` and `currency: null` together when nobody carries the variant, which the same section describes in prose. The frontend schema mirrors the API. Worth writing the null case into the example or a sentence so the next client does not refuse it | **Closed 2026-08-27.** Contract version 6 states it in section 11.9: `lowest_price_minor` and `currency` are always null together and never one without the other |
+
+| Frontend | 2026-08-27 | **The 5 per minute `verification` limiter and the five attempt ceiling interact.** Each attempt costs two requests (start plus submit), so a buyer working through all five in one sitting trips `rate_limited` after roughly two and a half. Both limits are correct in isolation. Worth deciding whether the limiter should be widened, or whether S-15 should explain the pause | Open. Not blocking: the ceiling is enforced correctly and the refusal is a registered code the client already handles |
 
 Use this table rather than guessing. A frontend screen that needs a field the contract does not define adds a row here. It does not invent a field name and hope.

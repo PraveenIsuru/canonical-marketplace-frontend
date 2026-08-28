@@ -99,7 +99,17 @@ export default async function StorePage({ params }: Params) {
                 className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
               >
                 <div className="flex flex-col gap-0.5">
-                  <Link href={`/products/${listing.product.slug}`} className="font-medium underline">
+                  {/*
+                    Carries the store context for EP-52, and this is the only place in
+                    the application that does. A visitor following this link arrived at
+                    the product *through* this store, so the view it records belongs to
+                    them. A product reached from the catalogue or from search carries
+                    no `store` parameter and is attributed to nobody.
+                  */}
+                  <Link
+                    href={`/products/${listing.product.slug}?store=${store.id}`}
+                    className="font-medium underline"
+                  >
                     {listing.product.name}
                   </Link>
                   {Object.keys(listing.attribute_values).length > 0 && (

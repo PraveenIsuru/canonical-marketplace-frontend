@@ -1,9 +1,11 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { getProduct, getProducts, getSellers, getSummary, getVariants } from '@/lib/api/catalogue';
 import { ProductImage } from '@/components/product/ProductImage';
 import { ProductInteractive } from '@/components/product/ProductInteractive';
+import { ViewRecorder } from '@/components/product/ViewRecorder';
 import { Card } from '@/components/ui';
 
 /**
@@ -153,6 +155,15 @@ export default async function ProductPage({ params }: Params) {
       <ProductInteractive product={product} variants={variants} initialSellers={sellers.data} />
 
       <StructuredData product={product} sellers={sellers.data} />
+
+      {/*
+        EP-52. Renders nothing and is wrapped in Suspense because it reads the query
+        string: without a boundary, `useSearchParams` would pull this whole route out
+        of static generation, which is the one thing this page cannot afford.
+      */}
+      <Suspense fallback={null}>
+        <ViewRecorder slug={product.slug} />
+      </Suspense>
     </article>
   );
 }
