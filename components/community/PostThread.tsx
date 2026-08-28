@@ -5,6 +5,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getReplies } from '@/lib/api/community';
 import { queryKeys, staleTimes } from '@/lib/query/keys';
 import { formatRelative } from '@/lib/format/dates';
+import { useSession } from '@/lib/auth/useSession';
+import { isAdmin } from '@/lib/auth/guards';
+import { RemovePostButton } from '@/components/admin/RemovePostButton';
 import { PostComposer } from './PostComposer';
 import { Card, Skeleton } from '@/components/ui';
 import type { CommunityPost } from '@/types/community';
@@ -24,14 +27,23 @@ interface Props {
  *
  * **A soft deleted post is simply absent**, and so are its replies. There is no
  * tombstone, no "removed by an administrator" line, and no placeholder. Inventing one
- * would advertise a moderation feature that does not exist yet and would leave a
- * conversation stub with its subject missing.
+ * would leave a conversation stub with its subject missing, and would publish a
+ * moderation history this platform deliberately does not keep in the open.
+ *
+ * As of M11 an administrator sees a remove control on every post and reply. That gate
+ * is a rendering hint: the API refuses the call for anybody else whatever the client
+ * believed. Nothing else about this component changed, because a removed post was
+ * already handled by being absent.
  */
 export function PostThread({ slug, productName, post }: Props) {
   const queryClient = useQueryClient();
 
   const [open, setOpen] = useState(false);
   const [replying, setReplying] = useState(false);
+
+  // A rendering hint only. Authorisation is the API's decision on every request.
+  const { session } = useSession();
+  const canModerate = isAdmin(session);
 
   const { data, isPending } = useQuery({
     queryKey: queryKeys.community.replies(slug, post.id),
@@ -73,6 +85,15 @@ export function PostThread({ slug, productName, post }: Props) {
         <button type="button" onClick={() => setReplying((was) => !was)} className="underline">
           {replying ? 'Cancel' : 'Reply'}
         </button>
+
+        {canModerate && (
+          <RemovePostButton
+            postId={post.id}
+            slug={slug}
+            isReply={false}
+            replyCount={post.reply_count}
+          />
+        )}
       </div>
 
       {replying && (
@@ -97,6 +118,12 @@ export function PostThread({ slug, productName, post }: Props) {
                 </span>
               </div>
               <p className="mt-1 whitespace-pre-wrap text-sm">{reply.body}</p>
+
+              {canModerate && (
+                <p className="mt-1">
+                  <RemovePostButton postId={reply.id} slug={slug} isReply replyCount={0} />
+                </p>
+              )}
             </div>
           ))}
 
